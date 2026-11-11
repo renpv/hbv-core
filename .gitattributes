@@ -3,3 +3,7 @@
 .gitignore export-ignore
 README.md export-ignore
 CHANGELOG.md export-ignore
+
+# Ferramentas de desenvolvimento (fora do pacote do plugin)
+tools export-ignore
+docs export-ignore
