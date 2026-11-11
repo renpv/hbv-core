@@ -1,0 +1,5 @@
+# Fora do pacote de distribuição (git archive).
+.gitattributes export-ignore
+.gitignore export-ignore
+README.md export-ignore
+CHANGELOG.md export-ignore
