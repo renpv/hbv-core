@@ -1995,7 +1995,7 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 	}
 
 	/**
-	 * Muda o status de um post sem passar o conteúdo pelos filtros kses.
+	 * Muda o status de um post sem mexer em post_modified, revisões nem metadados.
 	 *
 	 * @param int    $id     ID do post.
 	 * @param string $status Novo status.
@@ -2003,27 +2003,21 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 	 * @return bool
 	 */
 	private function mudar_status( $id, $status, &$erro ) {
-		$res = $this->com_kses_desligado(
-			static function () use ( $id, $status ) {
-				return wp_update_post(
-					wp_slash(
-						array(
-							'ID'          => $id,
-							'post_status' => $status,
-						)
-					),
-					true
-				);
-			}
+		global $wpdb;
+		// Atualização direta: wp_update_post() mudaria post_modified, criaria revisão
+		// e gravaria _encloseme ao republicar, e o desfazer não voltaria ao estado anterior.
+		$res = $wpdb->update(
+			$wpdb->posts,
+			array( 'post_status' => $status ),
+			array( 'ID' => (int) $id ),
+			array( '%s' ),
+			array( '%d' )
 		);
-		if ( is_wp_error( $res ) ) {
-			$erro = $res->get_error_message();
+		if ( false === $res ) {
+			$erro = $wpdb->last_error ? $wpdb->last_error : 'falha ao atualizar post_status';
 			return false;
 		}
-		if ( ! $res ) {
-			$erro = 'wp_update_post não devolveu um ID';
-			return false;
-		}
+		clean_post_cache( (int) $id );
 		return true;
 	}
 
