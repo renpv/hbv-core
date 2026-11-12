@@ -370,10 +370,13 @@ function hbv_revisao_descrever_sugestao( $caso ) {
 			if ( ! empty( $p['remover'] ) ) {
 				return sprintf( 'Tirar do texto o link <code>%s</code> e manter o texto dele.', esc_html( $de ) );
 			}
+			if ( empty( $p['para'] ) ) {
+				return sprintf( 'Trocar o link <code>%s</code> por um endereço que você informa abaixo (ou remover o link).', esc_html( $de ) );
+			}
 			return sprintf(
 				'Trocar o link <code>%s</code> por <code>%s</code> em todo o texto.',
 				esc_html( $de ),
-				esc_html( isset( $p['para'] ) ? (string) $p['para'] : '' )
+				esc_html( (string) $p['para'] )
 			);
 
 		case 'publicar':
