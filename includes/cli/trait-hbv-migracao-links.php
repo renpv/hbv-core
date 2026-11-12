@@ -25,6 +25,13 @@ trait HBV_Migracao_Links {
 	private $links_hosts = array();
 
 	/**
+	 * Porta da home_url() com dois-pontos (":8088"), ou vazio.
+	 *
+	 * @var string
+	 */
+	private $links_porta_home = '';
+
+	/**
 	 * Raiz do site (esquema e host de home_url()), sem barra final.
 	 *
 	 * @var string
@@ -118,7 +125,8 @@ trait HBV_Migracao_Links {
 		if ( is_array( $partes ) && ! empty( $partes['host'] ) ) {
 			$raiz = ( isset( $partes['scheme'] ) ? $partes['scheme'] : 'http' ) . '://' . $partes['host'] . ( isset( $partes['port'] ) ? ':' . $partes['port'] : '' );
 		}
-		$this->links_raiz = $raiz;
+		$this->links_raiz       = $raiz;
+		$this->links_porta_home = ( is_array( $partes ) && isset( $partes['port'] ) ) ? ':' . $partes['port'] : '';
 	}
 
 	/* ---------- Execução do comando "links" ---------- */
@@ -679,7 +687,11 @@ trait HBV_Migracao_Links {
 		}
 
 		$host = strtolower( $m[1] );
-		if ( '' !== $m[2] || ! in_array( $host, $this->links_hosts, true ) ) {
+		if ( ! in_array( $host, $this->links_hosts, true ) ) {
+			return null;
+		}
+		// Com porta, só é interno se for a mesma porta do site (ex.: http://localhost:8088).
+		if ( '' !== $m[2] && $m[2] !== $this->links_porta_home ) {
 			return null;
 		}
 

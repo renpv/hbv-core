@@ -548,7 +548,7 @@ links apontarem direto para os endereços novos.
 - Links considerados: `href` de `<a>` (aspas duplas ou simples) em http ou https, com host igual ao de
   `home_url()` ou a um `--host` (padrão: `historiadeboaviagem.com.br,www.historiadeboaviagem.com.br`;
   `--host` substitui o padrão, e o host de `home_url()` entra sempre). Ignora `/wp-content/`,
-  `/wp-admin/`, âncoras puras, `mailto:`, links externos, links com porta e links relativos.
+  `/wp-admin/`, âncoras puras, `mailto:`, links externos, links com porta diferente da do site e links relativos.
 - Destino, nesta ordem (a primeira regra que decide vale):
 
 | Regra | Condição | Resultado |
