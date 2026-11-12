@@ -387,12 +387,94 @@ ou um módulo novo tratar o parâmetro, o endereço mostra o arquivo inteiro.
 - `status`: acrescenta, por lote, `hbv_fato (criado)`, `página de mês (dividida)` e
   `biografia (datas gravadas)` (número de pessoas).
 
+## Campos da ficha (0.5.0)
+
+`wp hbv migracao campos` grava campos da ficha (post meta) em qualquer tipo do plugin a partir de um
+TSV. Serve para o que as extrações produzem fora dos comandos anteriores (datas de pessoas, local de
+nascimento, tipo e lei do logradouro etc.), sem escrever um comando novo para cada campo.
+
+### `wp hbv migracao campos <arquivo.tsv> [--simular] [--lote=<nome>]`
+
+Cabeçalho exato, separado por tabulação: `id	campo	valor	modo	fonte`.
+
+| Coluna | Regra |
+|---|---|
+| `id` | ID do post: tem de existir, estar publicado e ser de um tipo `hbv_*`. |
+| `campo` | Chave de meta **com prefixo** (`hbv_nascimento_dia`, `hbv_local_nascimento`). Só vale se existir na ficha do tipo daquele post (`hbv_fields_for()`); `hbv_fontes` não é aceito. |
+| `valor` | Validado e sanitizado conforme o tipo do campo (abaixo). Vazio é recusado. |
+| `modo` | `preencher` ou `sobrescrever`; outro valor é recusado. |
+| `fonte` | Texto livre; só vai para o relatório. |
+
+Valor por tipo de campo: `number` é inteiro dentro de `min` e `max` do campo (fora, recusa; sem `min` e
+`max`, o inteiro tem de ser maior que zero); `select` tem de ser uma das chaves de `options` (para mês,
+1 a 12); `text` usa `sanitize_text_field`; `textarea`, `sanitize_textarea_field`; `url`, `esc_url_raw`
+(o que não vira URL é recusado); `post` é o ID de um post existente do `post_type` do campo.
+
+**Modos.** `preencher` grava só se o campo estiver vazio (sem meta, meta vazia ou `0` em campo numérico);
+se já tem o mesmo valor, conta "já igual"; se tem valor diferente, é **conflito**: não grava e a linha vai
+para o relatório com o valor atual. `sobrescrever` grava mesmo com valor diferente (conta "sobrescrito").
+
+**Recusas** (sem interromper o lote): post inexistente, não publicado ou de outro tipo; campo fora da
+ficha do tipo; valor inválido; modo inválido; linhas do mesmo `id` e `campo` com valores diferentes no
+arquivo (todas as do par); campo já gravado por outro lote ainda não desfeito ("campo gravado pelo lote
+X"); campo com mais de uma linha de meta. Linha repetida com o mesmo valor conta uma vez (as seguintes
+saem como "já igual"). Linha com número de colunas errado é recusada e vai para o relatório.
+
+**Registro para desfazer.** Antes de alterar um campo, o comando grava no post o meta
+`_hbv_migracao_campos` (JSON, um registro por lote):
+`{"<lote>":{"data":"…","campos":{"hbv_nascimento_dia":null},"gravados":{"hbv_nascimento_dia":"12"}}}`.
+`campos` traz o valor anterior (`null` = o meta não existia); `gravados`, o valor que o lote escreveu,
+usado pelo `desfazer` e pelo `verificar` para perceber edição posterior. Se a gravação do campo falha,
+o campo e o registro voltam ao que eram. Usa `update_post_meta` e `delete_post_meta`: não muda
+`post_modified` e não cria revisões. Processa em blocos de 200 linhas, limpando o cache entre blocos.
+
+`--simular` não grava nada (nem relatório) e mostra, por campo, quantos seriam gravados, já iguais,
+conflitos, sobrescritas e recusadas, os motivos das recusas e 5 exemplos de conflito (id, campo, valor
+atual, valor proposto, fonte). Sem `--simular`: mesma tabela, com "gravados", e o relatório
+`uploads/hbv-migracao/<lote>.tsv`, uma linha por linha de entrada: `id, campo, valor, modo, fonte,
+valor_anterior, resultado, motivo` (resultado: `gravado`, `ja_igual`, `conflito`, `sobrescrito` ou
+`recusado`).
+
+Exemplo, datas de pessoas (`datas-pessoas.tsv`):
+
+```
+id	campo	valor	modo	fonte
+1234	hbv_nascimento_dia	12	preencher	biografia, 1º Momento
+1234	hbv_nascimento_mes	3	preencher	biografia, 1º Momento
+1234	hbv_nascimento_ano	1890	preencher	biografia, 1º Momento
+1234	hbv_local_nascimento	Boa Viagem	preencher	biografia, 1º Momento
+2345	hbv_falecimento_dia	21	sobrescrever	revisão manual
+2345	hbv_falecimento_mes	11	sobrescrever	revisão manual
+```
+
+```
+wp hbv migracao campos datas-pessoas.tsv --simular
+wp hbv migracao campos datas-pessoas.tsv --lote=datas-1
+wp hbv migracao verificar --lote=datas-1
+wp hbv migracao desfazer --lote=datas-1
+```
+
+### Desfazer, verificar e status (campos)
+
+- `desfazer --lote=<nome>`: restaura cada campo ao valor anterior (`delete_post_meta` quando era `null`),
+  tira a entrada do lote de `_hbv_migracao_campos` e apaga o meta quando fica vazio; o objetivo é banco
+  idêntico ao anterior (`CHECKSUM TABLE` de `wp_posts` e `wp_postmeta`). Se o valor atual de um campo
+  não é o que o lote gravou (alguém editou depois), esse campo **não** é restaurado e o comando avisa.
+  `--simular` mostra o que seria restaurado, com os mesmos avisos.
+- `verificar [--lote=<nome>]`: confere que cada campo gravado ainda tem o valor gravado; as divergências
+  entram na lista de falhas (a coluna `caminho_antigo` traz o nome do campo).
+- `status`: acrescenta, por lote, `ficha (posts com campos gravados)` e `ficha (campos gravados)`.
+
+Atenção: o `desfazer` do `meses` e o do `campos` são independentes. Se os dois gravaram o mesmo campo da
+mesma pessoa (por exemplo `hbv_nascimento_dia`), desfaça primeiro o lote gravado por último.
+
 ## Fora desta versão (próximos PRs)
 
 - Filtro `hbv_mes` na listagem de `hbv_fato` e as listas "Nasceram/Morreram neste mês" geradas dos
   campos de data das biografias (a migração já grava os dados; falta a exibição).
-- Extração de campos da ficha (nascimento, falecimento, local, papel; tipo e lei do logradouro;
-  distrito da localidade). Regras primeiro; casos fora do padrão por modelo pequeno, com validação.
+- Extração dos valores dos campos da ficha (nascimento, falecimento, local, papel; tipo e lei do
+  logradouro; distrito da localidade). A gravação existe (`campos`); falta gerar os TSV. Regras
+  primeiro; casos fora do padrão por modelo pequeno, com validação.
 - Reescrever links internos antigos dentro dos textos.
 
 ## Regras do projeto que valem aqui

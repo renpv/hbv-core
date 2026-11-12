@@ -3,6 +3,25 @@
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/). Versões em
 [SemVer](https://semver.org/lang/pt-BR/).
 
+## [0.5.0] - 2026-11-12
+
+### Adicionado
+- `wp hbv migracao campos <arquivo.tsv> [--simular] [--lote=<nome>]`: grava campos da ficha (post
+  meta) em qualquer tipo do plugin. TSV com cabeçalho `id campo valor modo fonte`; o campo tem de
+  existir na ficha do tipo do post (exceto `hbv_fontes`) e o valor é validado conforme o tipo do
+  campo (número no intervalo, opção de select, texto, url, ID de post do tipo certo). Modos
+  `preencher` (só campo vazio; valor diferente vira conflito, só no relatório) e `sobrescrever`.
+  Recusa linhas repetidas com valores diferentes e campos já gravados por outro lote não desfeito.
+  Processa em blocos de 200 linhas. Relatório `<lote>.tsv` em `uploads/hbv-migracao/` e, com
+  `--simular`, contagens por campo e 5 exemplos de conflito.
+- Registro de desfazer `_hbv_migracao_campos` (JSON por lote: valor anterior e valor gravado de cada
+  campo), escrito antes de alterar o campo.
+
+### Alterado
+- `desfazer` restaura os campos gravados por `campos` (apaga o meta que não existia; não restaura
+  o campo que foi editado depois do lote, e avisa), `verificar` confere que cada campo gravado ainda
+  tem o valor gravado e `status` mostra, por lote, os posts e os campos gravados.
+
 ## [0.4.0] - 2026-11-12
 
 ### Adicionado
