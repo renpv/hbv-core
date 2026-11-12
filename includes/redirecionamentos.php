@@ -73,12 +73,16 @@ function hbv_core_caminho_da_requisicao() {
 }
 
 /**
- * Resolve um caminho antigo para a URL atual de um post convertido.
+ * Resolve um caminho antigo para a URL atual.
+ *
+ * Procura primeiro em posts convertidos (_hbv_caminho_antigo no post publicado)
+ * e depois em termos da taxonomia hbv_autoria (_hbv_caminho_antigo no term meta:
+ * páginas de bibliografia e discografia divididas em obras).
  *
  * Função pública: também usada por "wp hbv migracao verificar".
  *
  * @param string $caminho Caminho antigo (ex.: /bairro-recreio/).
- * @return string|null URL de destino, ou null se nenhum post publicado tem esse caminho.
+ * @return string|null URL de destino, ou null se nenhum post publicado nem termo de autoria tem esse caminho.
  */
 function hbv_core_resolver_caminho( $caminho ) {
 	global $wpdb;
@@ -96,12 +100,34 @@ function hbv_core_resolver_caminho( $caminho ) {
 			'publish'
 		)
 	);
-	if ( $post_id < 1 ) {
+	if ( $post_id > 0 ) {
+		$url = get_permalink( $post_id );
+		if ( $url ) {
+			return $url;
+		}
+	}
+
+	if ( ! taxonomy_exists( 'hbv_autoria' ) ) {
 		return null;
 	}
 
-	$url = get_permalink( $post_id );
-	return $url ? $url : null;
+	$term_id = (int) $wpdb->get_var(
+		$wpdb->prepare(
+			"SELECT tm.term_id FROM {$wpdb->termmeta} tm
+			INNER JOIN {$wpdb->term_taxonomy} tt ON tt.term_id = tm.term_id
+			WHERE tm.meta_key = %s AND tm.meta_value = %s AND tt.taxonomy = %s
+			LIMIT 1",
+			'_hbv_caminho_antigo',
+			$caminho,
+			'hbv_autoria'
+		)
+	);
+	if ( $term_id < 1 ) {
+		return null;
+	}
+
+	$url = get_term_link( $term_id, 'hbv_autoria' );
+	return ( is_string( $url ) && '' !== $url ) ? $url : null;
 }
 
 /**

@@ -1,6 +1,6 @@
 <?php
 /**
- * Taxonomias: tema, período, tipo de lugar, papel, tipo de obra, tipo de instituição.
+ * Taxonomias: tema, período, tipo de lugar, papel, tipo de obra, tipo de instituição e autoria.
  *
  * @package hbv-core
  */
@@ -60,6 +60,13 @@ function hbv_taxonomy_defs() {
 			'hierarchical' => true,
 			'objects'      => array( 'hbv_instituicao' ),
 		),
+		'hbv_autoria'          => array(
+			'singular'     => 'Autoria',
+			'plural'       => 'Autorias',
+			'slug'         => 'autoria',
+			'hierarchical' => false,
+			'objects'      => array( 'hbv_obra' ),
+		),
 	);
 }
 
@@ -111,6 +118,28 @@ function hbv_register_taxonomies() {
 			'single'            => true,
 			'show_in_rest'      => true,
 			'sanitize_callback' => 'absint',
+		)
+	);
+
+	// Autoria: ID da biografia (hbv_pessoa) do autor ou artista e a formação (bandas, duplas).
+	register_term_meta(
+		'hbv_autoria',
+		'hbv_pessoa',
+		array(
+			'type'              => 'integer',
+			'single'            => true,
+			'show_in_rest'      => true,
+			'sanitize_callback' => 'absint',
+		)
+	);
+	register_term_meta(
+		'hbv_autoria',
+		'hbv_formacao',
+		array(
+			'type'              => 'string',
+			'single'            => true,
+			'show_in_rest'      => true,
+			'sanitize_callback' => 'sanitize_text_field',
 		)
 	);
 }
