@@ -1,6 +1,6 @@
 <?php
 /**
- * Comandos WP-CLI do migrador: wp hbv migracao <converter|desfazer|status|verificar|obras|titulos|meses|campos>.
+ * Comandos WP-CLI do migrador: wp hbv migracao <converter|desfazer|status|verificar|obras|titulos|meses|campos|links|limpar>.
  *
  * Ver docs/MIGRADOR.md. Este arquivo só é carregado quando WP_CLI está ativo.
  *
@@ -10,6 +10,8 @@
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
+
+require_once __DIR__ . '/trait-hbv-migracao-links.php';
 
 /**
  * Converte os posts do acervo para os tipos do HBV Core, com registro,
@@ -26,8 +28,12 @@ if ( ! defined( 'ABSPATH' ) ) {
  * redirecionamento por caminho fixo.
  * Desde a 0.5.0: "campos" grava campos da ficha (post meta) em qualquer tipo do plugin, a partir
  * de um TSV (id, campo, valor, modo, fonte), com registro por lote para o desfazer.
+ * Desde a 0.7.0: "links" reescreve os links internos dos textos para os endereços novos (registro por
+ * lote, com o texto original guardado) e "limpar" apaga esses originais depois de aprovado o lote.
  */
 class HBV_Migracao_Command extends WP_CLI_Command {
+
+	use HBV_Migracao_Links;
 
 	const META_REGISTRO = '_hbv_migracao';
 	const META_CAMINHO  = '_hbv_caminho_antigo';
@@ -60,6 +66,33 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 	const ROTULO_CAMPOS_POSTS = 'ficha (posts com campos gravados)';
 	const ROTULO_CAMPOS       = 'ficha (campos gravados)';
 	const ROTULO_CAMPOS_REST  = 'ficha (campos restaurados)';
+
+	/**
+	 * Comando "links" (0.7.0): registro de desfazer, bloco, exemplos, colunas dos relatórios e rótulos.
+	 */
+	const META_LINKS            = '_hbv_migracao_links';
+	const BLOCO_LINKS           = 100;
+	const EXEMPLOS_LINKS        = 10;
+	const HOSTS_PADRAO_LINKS    = 'historiadeboaviagem.com.br,www.historiadeboaviagem.com.br';
+	const CABECALHO_LINKS       = array( 'id', 'tipo', 'links_internos', 'trocados', 'ja_atuais', 'nao_resolvidos', 'resultado' );
+	const CABECALHO_LINKS_NR    = array( 'id', 'titulo', 'href', 'motivo' );
+	const ROTULO_LINKS          = 'links internos (posts reescritos)';
+	const ROTULO_LINKS_LIMPOS   = 'links internos (originais já removidos)';
+	const REGRAS_LINKS          = array(
+		'a' => 'anexo (rel wp-att-ID)',
+		'b' => 'já é o permalink atual',
+		'c' => 'post convertido, autoria, caminho fixo',
+		'd' => 'slug antigo (_wp_old_slug)',
+		'e' => 'categoria antiga',
+		'f' => 'não resolvido',
+	);
+
+	/**
+	 * Tag <a ...> inteira (aspas respeitadas) e atributo dentro dela. Sem o modificador u: o texto pode
+	 * ter bytes que não são UTF-8 válido e a troca precisa deixar o resto byte a byte.
+	 */
+	const RE_TAG_A    = '#<a\s(?:[^>"\']++|"[^"]*+"|\'[^\']*+\')*+>#i';
+	const RE_ATRIBUTO = '#\s([a-zA-Z_:][-a-zA-Z0-9_:.]*)(?:\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|[^\s"\'=<>`]+))?#';
 
 	/**
 	 * Colunas do plano.tsv, exatamente nesta ordem.
@@ -389,6 +422,11 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 	 * Campo cujo valor atual não é o que o lote gravou (alguém editou depois) não é restaurado:
 	 * o comando avisa e segue.
 	 *
+	 * Para o lote do comando "links": restaura post_content a partir de conteudo_original, direto no
+	 * banco, só se o md5 do texto atual for o md5_novo gravado (senão avisa e não restaura), e remove
+	 * a entrada do lote do registro (apagando o meta quando fica vazio). Se os originais já foram
+	 * removidos pelo "limpar", avisa e mantém o registro.
+	 *
 	 * ## OPTIONS
 	 *
 	 * [--lote=<nome>]
@@ -436,6 +474,32 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 
 		wp_defer_term_counting( true );
 		try {
+			// Links internos reescritos (comando "links"): primeiro, porque foram o último passo da migração.
+			foreach ( $this->registros_datas( $filtro, self::META_LINKS ) as $bloco ) {
+				foreach ( $bloco as $post_id => $mapa ) {
+					if ( null === $mapa ) {
+						$invalidos++;
+						WP_CLI::warning( 'Registro ' . self::META_LINKS . ' ilegível no post ' . $post_id . '; ignorado.' );
+						continue;
+					}
+					foreach ( array_keys( $mapa ) as $lote_links ) {
+						$lote_links = (string) $lote_links;
+						if ( '' !== $filtro && $lote_links !== $filtro ) {
+							continue;
+						}
+						$aviso_links = '';
+						if ( $this->links_restaurar_post( $post_id, $lote_links, $simular, $aviso_links ) ) {
+							$revertidos[ self::ROTULO_LINKS ] = ( isset( $revertidos[ self::ROTULO_LINKS ] ) ? $revertidos[ self::ROTULO_LINKS ] : 0 ) + 1;
+						}
+						if ( '' !== $aviso_links ) {
+							$avisos++;
+							WP_CLI::warning( 'Post ' . $post_id . ' (lote ' . $lote_links . '): ' . $aviso_links );
+						}
+					}
+				}
+				$this->limpar_memoria();
+			}
+
 			// Ordem: obras, páginas (e posts convertidos), termos.
 			foreach ( array( 'obras', 'paginas' ) as $fase ) {
 				foreach ( $this->registros( $filtro ) as $bloco ) {
@@ -579,7 +643,7 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 			WP_CLI::warning( $avisos . ' item(ns) com aviso (veja acima).' );
 		}
 
-		WP_CLI::success( ( $simular ? 'Simulação: seriam desfeitos ' : 'Desfeitos: ' ) . array_sum( $revertidos ) . ' item(ns) (posts, obras, fatos, datas, campos, páginas e termos).' );
+		WP_CLI::success( ( $simular ? 'Simulação: seriam desfeitos ' : 'Desfeitos: ' ) . array_sum( $revertidos ) . ' item(ns) (posts, obras, fatos, datas, campos, links, páginas e termos).' );
 	}
 
 	/**
@@ -588,7 +652,8 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 	 * Além das conversões de tipo, conta por lote as obras criadas, as páginas
 	 * divididas e os termos de autoria criados pelo comando "obras", e os fatos
 	 * criados, os meses divididos e as biografias com datas gravadas pelo "meses", e os
-	 * posts e os campos da ficha gravados pelo "campos".
+	 * posts e os campos da ficha gravados pelo "campos", e os posts reescritos pelo "links"
+	 * (e quantos já tiveram o original removido pelo "limpar").
 	 *
 	 * ## EXAMPLES
 	 *
@@ -703,6 +768,38 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 			$this->limpar_memoria();
 		}
 
+		foreach ( $this->registros_datas( '', self::META_LINKS ) as $bloco ) {
+			foreach ( $bloco as $mapa ) {
+				if ( null === $mapa ) {
+					continue;
+				}
+				foreach ( $mapa as $lote_links => $entrada ) {
+					$lote_links = (string) $lote_links;
+					$data       = ( is_array( $entrada ) && isset( $entrada['data'] ) ) ? (string) $entrada['data'] : '';
+					$rotulos    = array( self::ROTULO_LINKS );
+					if ( is_array( $entrada ) && ! isset( $entrada['conteudo_original'] ) ) {
+						$rotulos[] = self::ROTULO_LINKS_LIMPOS;
+					}
+					foreach ( $rotulos as $rotulo ) {
+						$chave = $lote_links . '|' . $rotulo;
+						if ( ! isset( $grupos[ $chave ] ) ) {
+							$grupos[ $chave ] = array(
+								'lote'       => $lote_links,
+								'data'       => $data,
+								'tipo_novo'  => $rotulo,
+								'quantidade' => 0,
+							);
+						}
+						$grupos[ $chave ]['quantidade']++;
+						if ( '' !== $data && ( '' === $grupos[ $chave ]['data'] || $data < $grupos[ $chave ]['data'] ) ) {
+							$grupos[ $chave ]['data'] = $data;
+						}
+					}
+				}
+			}
+			$this->limpar_memoria();
+		}
+
 		if ( $grupos ) {
 			ksort( $grupos );
 			\WP_CLI\Utils\format_items( 'table', array_values( $grupos ), array( 'lote', 'data', 'tipo_novo', 'quantidade' ) );
@@ -730,12 +827,18 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 	 * página de mês dividida pelo comando "meses": deve resolver para o destino registrado
 	 * (home_url + /datas-e-fatos/?hbv_mes=N). Confere também, para cada lote do comando "campos",
 	 * que cada campo gravado ainda tem o valor gravado (na lista de falhas, a coluna
-	 * caminho_antigo traz o nome do campo). Termina com erro se houver falha.
+	 * caminho_antigo traz o nome do campo). Confere também, para cada lote do comando "links", que o
+	 * texto atual de cada post tem o md5 gravado pelo lote e que nenhum link interno restante ainda é
+	 * resolvível pelas regras a, c, d ou e (na lista de falhas, caminho_antigo traz o href e esperado o
+	 * destino). Termina com erro se houver falha.
 	 *
 	 * ## OPTIONS
 	 *
 	 * [--lote=<nome>]
 	 * : Verifica só este lote. Padrão: todos.
+	 *
+	 * [--host=<hosts>]
+	 * : Hosts extras tratados como internos na conferência dos links (como no comando "links").
 	 *
 	 * [--formato=<formato>]
 	 * : Formato da lista de falhas.
@@ -772,6 +875,8 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 		$falhas        = array();
 		$total_campos  = 0;
 		$falhas_campos = 0;
+		$total_links   = 0;
+		$falhas_links  = 0;
 
 		// Caminhos de termo permitidos quando há --lote: os das páginas divididas do lote.
 		$caminhos_do_lote = array();
@@ -920,7 +1025,11 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 			$this->limpar_memoria();
 		}
 
-		if ( 0 === $total && 0 === $total_campos ) {
+		// Links internos reescritos pelo comando "links".
+		$hosts_links = $this->links_ler_hosts( isset( $assoc_args['host'] ) ? (string) $assoc_args['host'] : '' );
+		$this->links_verificar( $lote, $hosts_links, $falhas, $total_links, $falhas_links );
+
+		if ( 0 === $total && 0 === $total_campos && 0 === $total_links ) {
 			WP_CLI::warning( 'Nenhum post convertido' . ( '' !== $lote ? ' no lote "' . $lote . '"' : '' ) . '.' );
 			return;
 		}
@@ -935,6 +1044,9 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 		}
 		if ( $total_campos ) {
 			$partes[] = ( $total_campos - $falhas_campos ) . ' de ' . $total_campos . ' campos conferem';
+		}
+		if ( $total_links ) {
+			$partes[] = ( $total_links - $falhas_links ) . ' de ' . $total_links . ' posts de links conferem';
 		}
 		$resumo = implode( '; ', $partes );
 		if ( $falhas ) {
@@ -1699,6 +1811,161 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 
 		WP_CLI::log( 'Relatório: ' . $caminho_relatorio );
 		WP_CLI::success( 'Lote "' . $lote . '" concluído. Para voltar: wp hbv migracao desfazer --lote=' . $lote );
+	}
+
+	/**
+	 * Reescreve os links internos dos textos para os endereços novos.
+	 *
+	 * Para cada post publicado (post, page e os tipos do plugin; por ID crescente), acha os href de
+	 * <a> cujo host é o de home_url() ou um dos --host (http ou https; ignora /wp-content/,
+	 * /wp-admin/, âncoras, mailto: e links externos) e resolve o destino, nesta ordem:
+	 *
+	 * a) rel com wp-att-<ID> e o anexo existe: get_permalink(ID);
+	 * b) o caminho já é o permalink atual de um post publicado: não mexe;
+	 * c) hbv_core_resolver_caminho(): posts convertidos, termos de autoria, caminhos fixos;
+	 * d) slug antigo: último segmento em _wp_old_slug de um post publicado (mais de um: "ambíguo");
+	 * e) categoria antiga (mesmo mapa do redirecionamento);
+	 * f) senão, "não resolvido": o link não é alterado e vai para <lote>-nao-resolvidos.tsv.
+	 *
+	 * Só troca o valor do atributo href (regex pontual, sem DOMDocument), preservando aspas, query
+	 * string, fragmento (#) e o resto do HTML byte a byte; só troca se o destino for diferente do
+	 * link atual (comparação sem esquema e sem barra final). Antes de gravar, guarda o texto original
+	 * em _hbv_migracao_links (JSON por lote, com md5 do original e do novo); depois atualiza
+	 * post_content direto no banco (sem post_modified, revisão nem kses). Post que já tem registro de
+	 * outro lote (não desfeito) é recusado. Processa em blocos de 100 posts, limpando o cache entre eles.
+	 *
+	 * Relatórios em uploads/hbv-migracao/: <lote>.tsv (por post) e <lote>-nao-resolvidos.tsv (links
+	 * quebrados, para o editor corrigir à mão). Na simulação os arquivos levam o sufixo "-simulacao".
+	 *
+	 * ## OPTIONS
+	 *
+	 * [--simular]
+	 * : Não altera nenhum texto: mostra os totais por regra e 10 exemplos de troca (antes e depois).
+	 *
+	 * [--lote=<nome>]
+	 * : Nome do lote, só com a-z, 0-9 e hífen. Padrão: AAAAMMDD-HHMMSS (UTC).
+	 *
+	 * [--limite=<n>]
+	 * : Processa no máximo N posts (contados na ordem de ID, mesmo os sem links).
+	 *
+	 * [--tipos=<lista>]
+	 * : Post types separados por vírgula (post, page e os do plugin). Padrão: todos.
+	 *
+	 * [--host=<hosts>]
+	 * : Hosts extras, separados por vírgula, tratados como internos (além do de home_url()).
+	 * ---
+	 * default: historiadeboaviagem.com.br,www.historiadeboaviagem.com.br
+	 * ---
+	 *
+	 * ## EXAMPLES
+	 *
+	 *     # Ver o que mudaria
+	 *     wp hbv migracao links --simular
+	 *
+	 *     # Testar com 50 posts
+	 *     wp hbv migracao links --lote=links-teste --limite=50
+	 *
+	 *     # Só as biografias
+	 *     wp hbv migracao links --lote=links-pessoas --tipos=hbv_pessoa
+	 *
+	 *     # Voltar
+	 *     wp hbv migracao desfazer --lote=links-teste
+	 *
+	 * @when after_wp_load
+	 *
+	 * @param array $args       Argumentos posicionais.
+	 * @param array $assoc_args Argumentos nomeados.
+	 */
+	public function links( $args, $assoc_args ) {
+		$this->exigir_modulo();
+
+		if ( isset( $assoc_args['forcar'] ) ) {
+			WP_CLI::error( '--forcar não existe neste comando: post já reescrito é recusado. Para refazer, desfaça o lote com "wp hbv migracao desfazer".' );
+		}
+
+		$simular = (bool) \WP_CLI\Utils\get_flag_value( $assoc_args, 'simular', false );
+
+		$lote = (string) \WP_CLI\Utils\get_flag_value( $assoc_args, 'lote', gmdate( 'Ymd-His' ) );
+		if ( ! preg_match( '/^[a-z0-9-]+$/', $lote ) ) {
+			WP_CLI::error( 'Nome de lote inválido: use só a-z, 0-9 e hífen.' );
+		}
+
+		$limite = 0;
+		if ( isset( $assoc_args['limite'] ) ) {
+			$bruto = (string) $assoc_args['limite'];
+			if ( ! ctype_digit( $bruto ) || (int) $bruto < 1 ) {
+				WP_CLI::error( '--limite deve ser um inteiro maior que zero.' );
+			}
+			$limite = (int) $bruto;
+		}
+
+		$tipos = $this->links_ler_tipos( isset( $assoc_args['tipos'] ) ? (string) $assoc_args['tipos'] : '' );
+		$hosts = $this->links_ler_hosts( isset( $assoc_args['host'] ) ? (string) $assoc_args['host'] : '' );
+
+		WP_CLI::log( 'Hosts internos: ' . implode( ', ', $hosts ) . '. Tipos: ' . implode( ', ', $tipos ) . '.' );
+
+		$this->links_executar( $simular, $lote, $limite, $tipos, $hosts );
+	}
+
+	/**
+	 * Remove os textos originais guardados por um lote do comando "links".
+	 *
+	 * Apaga só o conteudo_original do registro _hbv_migracao_links (mantém data e md5s), para liberar
+	 * espaço no banco depois de aprovado o lote. Depois disso o "desfazer" daquele lote não é mais
+	 * possível (o comando avisa e mantém o registro). Pede confirmação.
+	 *
+	 * ## OPTIONS
+	 *
+	 * --lote=<nome>
+	 * : Lote do comando "links".
+	 *
+	 * [--yes]
+	 * : Não pede confirmação.
+	 *
+	 * [--sim]
+	 * : Mesmo que --yes.
+	 *
+	 * ## EXAMPLES
+	 *
+	 *     wp hbv migracao limpar --lote=links-1
+	 *     wp hbv migracao limpar --lote=links-1 --yes
+	 *
+	 * @when after_wp_load
+	 *
+	 * @param array $args       Argumentos posicionais.
+	 * @param array $assoc_args Argumentos nomeados.
+	 */
+	public function limpar( $args, $assoc_args ) {
+		$this->exigir_modulo();
+
+		$lote = (string) \WP_CLI\Utils\get_flag_value( $assoc_args, 'lote', '' );
+		if ( '' === $lote ) {
+			WP_CLI::error( 'Informe --lote=<nome>.' );
+		}
+		if ( ! preg_match( '/^[a-z0-9-]+$/', $lote ) ) {
+			WP_CLI::error( 'Nome de lote inválido: use só a-z, 0-9 e hífen.' );
+		}
+		if ( \WP_CLI\Utils\get_flag_value( $assoc_args, 'sim', false ) ) {
+			$assoc_args['yes'] = true;
+		}
+
+		$conta = $this->links_limpar_lote( $lote, false );
+		if ( $conta['ilegiveis'] ) {
+			WP_CLI::warning( $conta['ilegiveis'] . ' registro(s) ilegível(is) ignorado(s).' );
+		}
+		if ( $conta['ja_limpos'] ) {
+			WP_CLI::log( $conta['ja_limpos'] . ' post(s) do lote já estão sem o original.' );
+		}
+		if ( 0 === $conta['posts'] ) {
+			WP_CLI::warning( 'Nada a limpar no lote "' . $lote . '".' );
+			return;
+		}
+
+		WP_CLI::warning( sprintf( 'Serão removidos os originais de %d post(s) (%s). Depois disso o "desfazer" do lote "%s" não será mais possível.', $conta['posts'], size_format( $conta['bytes'] ), $lote ) );
+		WP_CLI::confirm( 'Remover os textos originais do lote "' . $lote . '"?', $assoc_args );
+
+		$feito = $this->links_limpar_lote( $lote, true );
+		WP_CLI::success( 'Originais removidos de ' . $feito['posts'] . ' post(s) (' . size_format( $feito['bytes'] ) . ' liberados no wp_postmeta).' );
 	}
 
 	/* ---------- Leitura do plano ---------- */
