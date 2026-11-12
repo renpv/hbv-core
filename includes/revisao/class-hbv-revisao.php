@@ -743,7 +743,7 @@ class HBV_Revisao {
 	 * @return string
 	 */
 	public static function lote_padrao() {
-		return 'revisao-' . gmdate( 'Ymd-His' );
+		return 'revisao-' . wp_date( 'Ymd-His' );
 	}
 
 	/**
@@ -856,7 +856,7 @@ class HBV_Revisao {
 		$arquivo = $pasta . '/' . $nome . '.tsv';
 		if ( file_exists( $arquivo ) ) {
 			// Lote repetido: não sobrescreve o relatório anterior.
-			$arquivo = $pasta . '/' . $nome . '-' . gmdate( 'His' ) . '.tsv';
+			$arquivo = $pasta . '/' . $nome . '-' . wp_date( 'His' ) . '.tsv';
 		}
 		$rel = fopen( $arquivo, 'wb' );
 		if ( ! $rel ) {

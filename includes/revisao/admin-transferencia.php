@@ -326,7 +326,7 @@ function hbv_revisao_exportar_post() {
 	}
 	nocache_headers();
 	header( 'Content-Type: text/tab-separated-values; charset=utf-8' );
-	header( 'Content-Disposition: attachment; filename="revisao-' . gmdate( 'Ymd-His' ) . '.tsv"' );
+	header( 'Content-Disposition: attachment; filename="revisao-' . wp_date( 'Ymd-His' ) . '.tsv"' );
 
 	HBV_Revisao::exportar_tsv(
 		$situacao,
