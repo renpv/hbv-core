@@ -49,8 +49,16 @@ O ambiente `hbv-local` (Docker no WSL) monta este repositório em `wp-content/pl
 ./scripts/wp.sh post-type list --fields=name,label --format=table
 ```
 
+## Migração
+
+Comandos WP-CLI (`wp hbv migracao converter|desfazer|status|verificar`) convertem os posts atuais
+para os tipos do plugin, com registro por lote, desfazer e redirecionamento 301 dos endereços
+antigos (módulo `includes/redirecionamentos.php`, sempre ativo; desligável com o filtro
+`hbv_core_redirecionar`). Rodam só no ambiente local. Fluxo, formato do plano e regras em
+[`docs/MIGRADOR.md`](docs/MIGRADOR.md); ajuda com `wp help hbv migracao converter`.
+
 ## Próximos módulos (plano de modernização)
 
-Migrador (WP-CLI), redirecionamentos 301, compartilhar e Open Graph, como citar, dados
+Compartilhar e Open Graph, como citar, dados
 estruturados, kit de divulgação, Hoje na história, relacionamentos, contribua, mapa e visitas
 sem rastreio. Cada um entra como módulo em `includes/`.
