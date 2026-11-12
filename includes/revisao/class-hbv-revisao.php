@@ -40,6 +40,13 @@ class HBV_Revisao {
 	const TAMANHO_OBS    = 2000;
 
 	/**
+	 * Colunas do TSV de entrada (nesta ordem), do relatório da importação e da exportação.
+	 */
+	const CABECALHO_ENTRADA    = array( 'chave', 'tipo', 'post_id', 'resumo', 'evidencia', 'acao', 'parametros' );
+	const CABECALHO_RELATORIO  = array( 'linha', 'chave', 'resultado', 'motivo' );
+	const CABECALHO_EXPORTACAO = array( 'id', 'chave', 'lote', 'tipo', 'post_id', 'resumo', 'evidencia', 'acao', 'parametros', 'situacao', 'observacao', 'valor_anterior', 'historico', 'decidido_por', 'decidido_em', 'criado_em' );
+
+	/**
 	 * Tag <a ...> inteira (aspas respeitadas) e atributo dentro dela. Sem o modificador u: o texto
 	 * pode ter bytes que não são UTF-8 válido e a troca precisa deixar o resto byte a byte.
 	 */
@@ -714,6 +721,296 @@ class HBV_Revisao {
 			array( '%s', '%s', '%s', '%d', '%s', '%s', '%s', '%s', '%s', '%s' )
 		);
 		return $ok ? (int) $wpdb->insert_id : 0;
+	}
+
+	/* ------------------------------------------------------------------
+	 * Importação e exportação de TSV (usadas pela tela e pelo WP-CLI)
+	 * ---------------------------------------------------------------- */
+
+	/**
+	 * Nome de lote válido: a-z, 0-9 e hífen, até 60 caracteres.
+	 *
+	 * @param string $lote Nome.
+	 * @return bool
+	 */
+	public static function lote_valido( $lote ) {
+		return (bool) preg_match( '/^[a-z0-9-]+$/', (string) $lote ) && strlen( (string) $lote ) <= self::TAMANHO_LOTE;
+	}
+
+	/**
+	 * Lote padrão: revisao-AAAAMMDD-HHMMSS (UTC).
+	 *
+	 * @return string
+	 */
+	public static function lote_padrao() {
+		return 'revisao-' . gmdate( 'Ymd-His' );
+	}
+
+	/**
+	 * Decodifica os escapes \t, \n e \\ de um campo do TSV.
+	 *
+	 * @param string $texto Texto do campo.
+	 * @return string
+	 */
+	public static function decodificar( $texto ) {
+		return preg_replace_callback(
+			'/\\\\([tn\\\\])/',
+			static function ( $m ) {
+				return 't' === $m[1] ? "\t" : ( 'n' === $m[1] ? "\n" : '\\' );
+			},
+			(string) $texto
+		);
+	}
+
+	/**
+	 * Codifica um campo para o TSV (inverso de decodificar; \r é descartado).
+	 *
+	 * @param string $texto Texto.
+	 * @return string
+	 */
+	public static function codificar( $texto ) {
+		return strtr(
+			str_replace( "\r", '', (string) $texto ),
+			array(
+				'\\' => '\\\\',
+				"\t" => '\\t',
+				"\n" => '\\n',
+			)
+		);
+	}
+
+	/**
+	 * Pasta dos relatórios (uploads/hbv-migracao), criada se preciso.
+	 *
+	 * @return string|false Caminho ou false.
+	 */
+	private static function pasta_relatorios() {
+		$upload = wp_upload_dir();
+		if ( ! empty( $upload['error'] ) ) {
+			return false;
+		}
+		$pasta = $upload['basedir'] . '/hbv-migracao';
+		if ( ! wp_mkdir_p( $pasta ) ) {
+			return false;
+		}
+		if ( ! file_exists( $pasta . '/index.php' ) ) {
+			file_put_contents( $pasta . '/index.php', '' );
+		}
+		return $pasta;
+	}
+
+	/**
+	 * Importa casos de um TSV.
+	 *
+	 * Valida cada linha, pula chaves que já existem (sem mexer na decisão) e grava o relatório
+	 * em uploads/hbv-migracao/<lote>.tsv (na simulação, <lote>-simulacao.tsv). Com $simular nada
+	 * é gravado na tabela.
+	 *
+	 * @param string $caminho Arquivo TSV.
+	 * @param string $lote    Nome do lote ('' = padrão).
+	 * @param bool   $simular Só validar.
+	 * @return array ok, erro (texto, se !ok), lote, simular, total, relatorio (caminho),
+	 *               contagem (tipo => resultado => n), linhas (cada uma: linha, chave, tipo, resultado, motivo).
+	 */
+	public static function importar_tsv( $caminho, $lote = '', $simular = false ) {
+		$falha = static function ( $erro ) {
+			return array(
+				'ok'   => false,
+				'erro' => $erro,
+			);
+		};
+
+		$lote = '' === (string) $lote ? self::lote_padrao() : (string) $lote;
+		if ( ! self::lote_valido( $lote ) ) {
+			return $falha( 'O nome do lote deve ter só a-z, 0-9 e hífen, até ' . self::TAMANHO_LOTE . ' caracteres.' );
+		}
+		if ( ! is_file( $caminho ) || ! is_readable( $caminho ) ) {
+			return $falha( 'Arquivo não encontrado ou ilegível.' );
+		}
+
+		$fh = fopen( $caminho, 'rb' );
+		if ( ! $fh ) {
+			return $falha( 'Não foi possível abrir o arquivo.' );
+		}
+
+		// Tabulação como delimitador, sem tratar aspas (os textos têm aspas) nem barra de escape do CSV.
+		$cabecalho = fgetcsv( $fh, 0, "\t", "\0", '' );
+		if ( false === $cabecalho ) {
+			fclose( $fh );
+			return $falha( 'Arquivo vazio.' );
+		}
+		if ( isset( $cabecalho[0] ) ) {
+			$cabecalho[0] = preg_replace( '/^\xEF\xBB\xBF/', '', (string) $cabecalho[0] );
+		}
+		if ( array_map( 'trim', $cabecalho ) !== self::CABECALHO_ENTRADA ) {
+			fclose( $fh );
+			return $falha( 'Cabeçalho inválido. Esperado: ' . implode( ' | ', self::CABECALHO_ENTRADA ) . ' (separados por tabulação).' );
+		}
+
+		$pasta = self::pasta_relatorios();
+		if ( false === $pasta ) {
+			fclose( $fh );
+			return $falha( 'Não foi possível criar a pasta dos relatórios em uploads.' );
+		}
+		$nome    = $lote . ( $simular ? '-simulacao' : '' );
+		$arquivo = $pasta . '/' . $nome . '.tsv';
+		if ( file_exists( $arquivo ) ) {
+			// Lote repetido: não sobrescreve o relatório anterior.
+			$arquivo = $pasta . '/' . $nome . '-' . gmdate( 'His' ) . '.tsv';
+		}
+		$rel = fopen( $arquivo, 'wb' );
+		if ( ! $rel ) {
+			fclose( $fh );
+			return $falha( 'Não foi possível criar o relatório.' );
+		}
+		fwrite( $rel, implode( "\t", self::CABECALHO_RELATORIO ) . "\n" );
+
+		$contagem = array();
+		$linhas   = array();
+		$vistas   = array();
+		$total    = 0;
+		$numero   = 1;
+
+		$registrar = static function ( $numero, $chave, $tipo, $resultado, $motivo ) use ( &$contagem, &$linhas, $rel ) {
+			$tipo = '' === $tipo ? '(vazio)' : $tipo;
+			if ( ! isset( $contagem[ $tipo ][ $resultado ] ) ) {
+				$contagem[ $tipo ][ $resultado ] = 0;
+			}
+			$contagem[ $tipo ][ $resultado ]++;
+			$linhas[] = array(
+				'linha'     => $numero,
+				'chave'     => $chave,
+				'tipo'      => $tipo,
+				'resultado' => $resultado,
+				'motivo'    => $motivo,
+			);
+			$campos = array_map(
+				static function ( $c ) {
+					return preg_replace( '/[\t\r\n]+/', ' ', (string) $c );
+				},
+				array( $numero, $chave, $resultado, $motivo )
+			);
+			fwrite( $rel, implode( "\t", $campos ) . "\n" );
+		};
+
+		while ( false !== ( $campos = fgetcsv( $fh, 0, "\t", "\0", '' ) ) ) {
+			$numero++;
+			if ( array( null ) === $campos ) {
+				continue; // Linha em branco.
+			}
+			$total++;
+
+			if ( count( $campos ) !== count( self::CABECALHO_ENTRADA ) ) {
+				$registrar( $numero, isset( $campos[0] ) ? self::decodificar( $campos[0] ) : '', isset( $campos[1] ) ? trim( $campos[1] ) : '', 'inválido', 'número de colunas errado (' . count( $campos ) . ' em vez de ' . count( self::CABECALHO_ENTRADA ) . ')' );
+				continue;
+			}
+
+			$d            = array_combine( self::CABECALHO_ENTRADA, array_map( array( __CLASS__, 'decodificar' ), $campos ) );
+			$d['chave']   = trim( $d['chave'] );
+			$d['tipo']    = trim( $d['tipo'] );
+			$d['post_id'] = trim( $d['post_id'] );
+			$d['acao']    = trim( $d['acao'] );
+
+			$v = self::validar( $d );
+			if ( ! $v['ok'] ) {
+				$registrar( $numero, $d['chave'], $d['tipo'], 'inválido', $v['motivo'] );
+				continue;
+			}
+			if ( isset( $vistas[ $d['chave'] ] ) ) {
+				$registrar( $numero, $d['chave'], $d['tipo'], 'já existe', 'chave repetida no arquivo (linha ' . $vistas[ $d['chave'] ] . ')' );
+				continue;
+			}
+			$vistas[ $d['chave'] ] = $numero;
+
+			if ( self::existe_chave( $d['chave'] ) ) {
+				$registrar( $numero, $d['chave'], $d['tipo'], 'já existe', 'chave já importada; decisão não alterada' );
+				continue;
+			}
+			if ( $simular ) {
+				$registrar( $numero, $d['chave'], $d['tipo'], 'importaria', '' );
+				continue;
+			}
+
+			$id = self::criar(
+				array(
+					'chave'      => $d['chave'],
+					'lote'       => $lote,
+					'tipo'       => $d['tipo'],
+					'post_id'    => (int) $d['post_id'],
+					'resumo'     => $d['resumo'],
+					'evidencia'  => $d['evidencia'],
+					'acao'       => $d['acao'],
+					'parametros' => $v['parametros'],
+				)
+			);
+			if ( $id ) {
+				$registrar( $numero, $d['chave'], $d['tipo'], 'importado', '' );
+			} else {
+				$registrar( $numero, $d['chave'], $d['tipo'], 'erro', 'falha ao gravar no banco' );
+			}
+		}
+		fclose( $fh );
+		fclose( $rel );
+
+		ksort( $contagem );
+		return array(
+			'ok'         => true,
+			'erro'       => '',
+			'lote'       => $lote,
+			'simular'    => (bool) $simular,
+			'total'      => $total,
+			'relatorio'  => $arquivo,
+			'contagem'   => $contagem,
+			'linhas'     => $linhas,
+		);
+	}
+
+	/**
+	 * Exporta os casos em TSV, em blocos de 500, entregando cada linha a $escrever (sem juntar tudo na memória).
+	 *
+	 * @param string   $situacao Filtro ('' = todas).
+	 * @param string   $tipo     Filtro ('' = todos).
+	 * @param callable $escrever Recebe uma linha de TSV sem a quebra final.
+	 */
+	public static function exportar_tsv( $situacao, $tipo, $escrever ) {
+		call_user_func( $escrever, implode( "\t", self::CABECALHO_EXPORTACAO ) );
+
+		$depois = 0;
+		do {
+			$bloco = self::listar_para_exportar( $situacao, $tipo, $depois, 500 );
+			foreach ( $bloco as $caso ) {
+				$campos = array();
+				foreach ( self::CABECALHO_EXPORTACAO as $coluna ) {
+					$valor = isset( $caso[ $coluna ] ) ? (string) $caso[ $coluna ] : '';
+					if ( 'decidido_em' === $coluna && '0000-00-00 00:00:00' === $valor ) {
+						$valor = '';
+					}
+					$campos[] = self::codificar( $valor );
+				}
+				call_user_func( $escrever, implode( "\t", $campos ) );
+				$depois = $caso['id'];
+			}
+		} while ( count( $bloco ) === 500 );
+	}
+
+	/**
+	 * Lotes existentes com o total de casos e quantos ainda estão pendentes.
+	 *
+	 * @return array[] Cada item: lote, total, pendentes.
+	 */
+	public static function listar_lotes() {
+		global $wpdb;
+		$tabela = self::tabela();
+		$linhas = $wpdb->get_results( $wpdb->prepare( "SELECT lote, COUNT(*) AS total, SUM(situacao = %s) AS pendentes FROM {$tabela} WHERE lote <> %s GROUP BY lote ORDER BY MAX(id) DESC LIMIT %d", 'pendente', '', 200 ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$lotes  = array();
+		foreach ( (array) $linhas as $l ) {
+			$lotes[] = array(
+				'lote'      => $l['lote'],
+				'total'     => (int) $l['total'],
+				'pendentes' => (int) $l['pendentes'],
+			);
+		}
+		return $lotes;
 	}
 
 	/* ------------------------------------------------------------------

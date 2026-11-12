@@ -20,21 +20,6 @@ if ( ! defined( 'ABSPATH' ) ) {
 class HBV_Revisao_Command extends WP_CLI_Command {
 
 	/**
-	 * Colunas do TSV de entrada, exatamente nesta ordem.
-	 */
-	const CABECALHO_ENTRADA = array( 'chave', 'tipo', 'post_id', 'resumo', 'evidencia', 'acao', 'parametros' );
-
-	/**
-	 * Colunas do relatório da importação.
-	 */
-	const CABECALHO_RELATORIO = array( 'linha', 'chave', 'resultado', 'motivo' );
-
-	/**
-	 * Colunas da exportação (todas as da tabela).
-	 */
-	const CABECALHO_EXPORTACAO = array( 'id', 'chave', 'lote', 'tipo', 'post_id', 'resumo', 'evidencia', 'acao', 'parametros', 'situacao', 'observacao', 'valor_anterior', 'historico', 'decidido_por', 'decidido_em', 'criado_em' );
-
-	/**
 	 * Importa casos de um TSV.
 	 *
 	 * Cabeçalho obrigatório (separado por tabulação, UTF-8):
@@ -81,127 +66,40 @@ class HBV_Revisao_Command extends WP_CLI_Command {
 		}
 
 		$simular = (bool) \WP_CLI\Utils\get_flag_value( $assoc_args, 'simular', false );
-		$lote    = (string) \WP_CLI\Utils\get_flag_value( $assoc_args, 'lote', 'revisao-' . gmdate( 'Ymd-His' ) );
-		if ( ! preg_match( '/^[a-z0-9-]+$/', $lote ) || strlen( $lote ) > HBV_Revisao::TAMANHO_LOTE ) {
+		$lote    = (string) \WP_CLI\Utils\get_flag_value( $assoc_args, 'lote', '' );
+		if ( '' !== $lote && ! HBV_Revisao::lote_valido( $lote ) ) {
 			WP_CLI::error( '--lote deve ter só a-z, 0-9 e hífen, até ' . HBV_Revisao::TAMANHO_LOTE . ' caracteres.' );
 		}
 
-		$fh = fopen( $arquivo, 'rb' );
-		if ( ! $fh ) {
-			WP_CLI::error( 'Não foi possível abrir: ' . $arquivo );
+		$r = HBV_Revisao::importar_tsv( $arquivo, $lote, $simular );
+		if ( ! $r['ok'] ) {
+			WP_CLI::error( $r['erro'] );
 		}
-
-		// Tabulação como delimitador, sem tratar aspas (os textos têm aspas) nem barra de escape do CSV.
-		$cabecalho = fgetcsv( $fh, 0, "\t", "\0", '' );
-		if ( false === $cabecalho ) {
-			fclose( $fh );
-			WP_CLI::error( 'Arquivo vazio: ' . $arquivo );
-		}
-		if ( isset( $cabecalho[0] ) ) {
-			$cabecalho[0] = preg_replace( '/^\xEF\xBB\xBF/', '', (string) $cabecalho[0] );
-		}
-		$cabecalho = array_map( 'trim', $cabecalho );
-		if ( $cabecalho !== self::CABECALHO_ENTRADA ) {
-			fclose( $fh );
-			WP_CLI::error( 'Cabeçalho inválido. Esperado: ' . implode( "\t", self::CABECALHO_ENTRADA ) );
-		}
-
-		$relatorio = $this->abrir_relatorio( $lote . ( $simular ? '-simulacao' : '' ), $rel );
-
-		$contagem = array(); // tipo => resultado => n.
-		$total    = 0;
-		$vistas   = array();
-		$numero   = 1;
-		$exemplos = array();
-
-		while ( false !== ( $campos = fgetcsv( $fh, 0, "\t", "\0", '' ) ) ) {
-			$numero++;
-			if ( array( null ) === $campos ) {
-				continue; // Linha em branco.
-			}
-			$total++;
-
-			$tipo_linha = isset( $campos[1] ) ? trim( $campos[1] ) : '?';
-			$chave_log  = isset( $campos[0] ) ? self::decodificar( $campos[0] ) : '';
-
-			if ( count( $campos ) !== count( self::CABECALHO_ENTRADA ) ) {
-				$this->registrar( $rel, $contagem, $numero, $chave_log, $tipo_linha, 'inválido', 'número de colunas errado (' . count( $campos ) . ' em vez de ' . count( self::CABECALHO_ENTRADA ) . ')' );
-				continue;
-			}
-
-			$d = array_combine( self::CABECALHO_ENTRADA, array_map( array( __CLASS__, 'decodificar' ), $campos ) );
-			$d['chave']   = trim( $d['chave'] );
-			$d['tipo']    = trim( $d['tipo'] );
-			$d['post_id'] = trim( $d['post_id'] );
-			$d['acao']    = trim( $d['acao'] );
-
-			$v = HBV_Revisao::validar( $d );
-			if ( ! $v['ok'] ) {
-				$this->registrar( $rel, $contagem, $numero, $d['chave'], $d['tipo'], 'inválido', $v['motivo'] );
-				continue;
-			}
-			if ( isset( $vistas[ $d['chave'] ] ) ) {
-				$this->registrar( $rel, $contagem, $numero, $d['chave'], $d['tipo'], 'já existe', 'chave repetida no arquivo (linha ' . $vistas[ $d['chave'] ] . ')' );
-				continue;
-			}
-			$vistas[ $d['chave'] ] = $numero;
-
-			if ( HBV_Revisao::existe_chave( $d['chave'] ) ) {
-				$this->registrar( $rel, $contagem, $numero, $d['chave'], $d['tipo'], 'já existe', 'chave já importada; decisão não alterada' );
-				continue;
-			}
-
-			if ( $simular ) {
-				$this->registrar( $rel, $contagem, $numero, $d['chave'], $d['tipo'], 'importaria', '' );
-				continue;
-			}
-
-			$id = HBV_Revisao::criar(
-				array(
-					'chave'      => $d['chave'],
-					'lote'       => $lote,
-					'tipo'       => $d['tipo'],
-					'post_id'    => (int) $d['post_id'],
-					'resumo'     => $d['resumo'],
-					'evidencia'  => $d['evidencia'],
-					'acao'       => $d['acao'],
-					'parametros' => $v['parametros'],
-				)
-			);
-			if ( $id ) {
-				$this->registrar( $rel, $contagem, $numero, $d['chave'], $d['tipo'], 'importado', '' );
-			} else {
-				$this->registrar( $rel, $contagem, $numero, $d['chave'], $d['tipo'], 'erro', 'falha ao gravar no banco' );
-			}
-		}
-		fclose( $fh );
-		fclose( $rel );
 
 		// Resumo por tipo e resultado.
 		$resultados = $simular ? array( 'importaria', 'já existe', 'inválido' ) : array( 'importado', 'já existe', 'inválido', 'erro' );
 		$linhas     = array();
 		$somas      = array_fill_keys( $resultados, 0 );
-		ksort( $contagem );
-		foreach ( $contagem as $tipo => $por_resultado ) {
+		foreach ( $r['contagem'] as $tipo => $por_resultado ) {
 			$linha = array( 'tipo' => $tipo );
-			foreach ( $resultados as $r ) {
-				$n               = isset( $por_resultado[ $r ] ) ? $por_resultado[ $r ] : 0;
-				$linha[ $r ]     = $n;
-				$somas[ $r ]    += $n;
+			foreach ( $resultados as $res ) {
+				$n              = isset( $por_resultado[ $res ] ) ? $por_resultado[ $res ] : 0;
+				$linha[ $res ]  = $n;
+				$somas[ $res ] += $n;
 			}
 			$linhas[] = $linha;
 		}
 		if ( $linhas ) {
 			$linha_total = array( 'tipo' => 'TOTAL' );
-			foreach ( $resultados as $r ) {
-				$linha_total[ $r ] = $somas[ $r ];
+			foreach ( $resultados as $res ) {
+				$linha_total[ $res ] = $somas[ $res ];
 			}
 			$linhas[] = $linha_total;
 			\WP_CLI\Utils\format_items( 'table', $linhas, array_merge( array( 'tipo' ), $resultados ) );
 		}
 
-		WP_CLI::log( 'Linhas lidas: ' . $total . ( $simular ? ' (simulação: nada foi gravado)' : '' ) . '. Lote: ' . $lote . '.' );
-		WP_CLI::log( 'Relatório: ' . $relatorio );
+		WP_CLI::log( 'Linhas lidas: ' . $r['total'] . ( $simular ? ' (simulação: nada foi gravado)' : '' ) . '. Lote: ' . $r['lote'] . '.' );
+		WP_CLI::log( 'Relatório: ' . $r['relatorio'] );
 
 		if ( ! empty( $somas['inválido'] ) ) {
 			WP_CLI::warning( $somas['inválido'] . ' linha(s) inválida(s): veja o motivo no relatório.' );
@@ -293,24 +191,13 @@ class HBV_Revisao_Command extends WP_CLI_Command {
 			WP_CLI::error( 'Valor inválido em --tipo: ' . $tipo . ' (use ' . implode( ', ', array_keys( HBV_Revisao::tipos() ) ) . ').' );
 		}
 
-		WP_CLI::line( implode( "\t", self::CABECALHO_EXPORTACAO ) );
-
-		$depois = 0;
-		do {
-			$bloco = HBV_Revisao::listar_para_exportar( $situacao, $tipo, $depois, 500 );
-			foreach ( $bloco as $caso ) {
-				$campos = array();
-				foreach ( self::CABECALHO_EXPORTACAO as $coluna ) {
-					$valor = isset( $caso[ $coluna ] ) ? (string) $caso[ $coluna ] : '';
-					if ( 'decidido_em' === $coluna && '0000-00-00 00:00:00' === $valor ) {
-						$valor = '';
-					}
-					$campos[] = self::codificar( $valor );
-				}
-				WP_CLI::line( implode( "\t", $campos ) );
-				$depois = $caso['id'];
+		HBV_Revisao::exportar_tsv(
+			$situacao,
+			$tipo,
+			static function ( $linha ) {
+				WP_CLI::line( $linha );
 			}
-		} while ( count( $bloco ) === 500 );
+		);
 	}
 
 	/**
@@ -339,7 +226,7 @@ class HBV_Revisao_Command extends WP_CLI_Command {
 		$this->preparar();
 
 		$lote = (string) \WP_CLI\Utils\get_flag_value( $assoc_args, 'lote', '' );
-		if ( '' === $lote || ! preg_match( '/^[a-z0-9-]+$/', $lote ) ) {
+		if ( '' === $lote || ! HBV_Revisao::lote_valido( $lote ) ) {
 			WP_CLI::error( 'Informe --lote=<nome> (a-z, 0-9 e hífen).' );
 		}
 
@@ -375,103 +262,5 @@ class HBV_Revisao_Command extends WP_CLI_Command {
 		if ( ! HBV_Revisao::tabela_existe() ) {
 			WP_CLI::error( 'A tabela ' . HBV_Revisao::tabela() . ' não pôde ser criada.' );
 		}
-	}
-
-	/**
-	 * Decodifica os escapes \t, \n e \\ de um campo do TSV.
-	 *
-	 * @param string $texto Texto do campo.
-	 * @return string
-	 */
-	public static function decodificar( $texto ) {
-		return preg_replace_callback(
-			'/\\\\([tn\\\\])/',
-			static function ( $m ) {
-				return 't' === $m[1] ? "\t" : ( 'n' === $m[1] ? "\n" : '\\' );
-			},
-			(string) $texto
-		);
-	}
-
-	/**
-	 * Codifica um campo para o TSV (inverso de decodificar).
-	 *
-	 * @param string $texto Texto.
-	 * @return string
-	 */
-	public static function codificar( $texto ) {
-		$texto = str_replace( "\r", '', (string) $texto );
-		return strtr(
-			$texto,
-			array(
-				'\\' => '\\\\',
-				"\t" => '\\t',
-				"\n" => '\\n',
-			)
-		);
-	}
-
-	/**
-	 * Anota o resultado de uma linha no relatório e na contagem.
-	 *
-	 * @param resource $rel      Arquivo do relatório.
-	 * @param array    $contagem Contagem por tipo e resultado (por referência).
-	 * @param int      $linha    Número da linha no arquivo.
-	 * @param string   $chave    Chave.
-	 * @param string   $tipo     Tipo (para a contagem).
-	 * @param string   $resultado Resultado.
-	 * @param string   $motivo   Motivo.
-	 */
-	private function registrar( $rel, &$contagem, $linha, $chave, $tipo, $resultado, $motivo ) {
-		$tipo = '' === $tipo ? '(vazio)' : $tipo;
-		if ( ! isset( $contagem[ $tipo ][ $resultado ] ) ) {
-			$contagem[ $tipo ][ $resultado ] = 0;
-		}
-		$contagem[ $tipo ][ $resultado ]++;
-
-		$campos = array( $linha, $chave, $resultado, $motivo );
-		$campos = array_map(
-			static function ( $c ) {
-				return preg_replace( '/[\t\r\n]+/', ' ', (string) $c );
-			},
-			$campos
-		);
-		fwrite( $rel, implode( "\t", $campos ) . "\n" );
-	}
-
-	/**
-	 * Cria a pasta do relatório e abre o arquivo.
-	 *
-	 * @param string   $nome Nome do arquivo (sem extensão).
-	 * @param resource $fh   Recebe o ponteiro (por referência).
-	 * @return string Caminho do relatório.
-	 */
-	private function abrir_relatorio( $nome, &$fh ) {
-		$upload = wp_upload_dir();
-		if ( ! empty( $upload['error'] ) ) {
-			WP_CLI::error( 'Pasta de uploads indisponível: ' . $upload['error'] );
-		}
-
-		$pasta = $upload['basedir'] . '/hbv-migracao';
-		if ( ! wp_mkdir_p( $pasta ) ) {
-			WP_CLI::error( 'Não foi possível criar a pasta do relatório: ' . $pasta );
-		}
-		if ( ! file_exists( $pasta . '/index.php' ) ) {
-			file_put_contents( $pasta . '/index.php', '' );
-		}
-
-		$arquivo = $pasta . '/' . $nome . '.tsv';
-		if ( file_exists( $arquivo ) ) {
-			// Lote repetido: não sobrescreve o relatório anterior.
-			$arquivo = $pasta . '/' . $nome . '-' . gmdate( 'His' ) . '.tsv';
-		}
-
-		$fh = fopen( $arquivo, 'wb' );
-		if ( ! $fh ) {
-			WP_CLI::error( 'Não foi possível criar o relatório: ' . $arquivo );
-		}
-		fwrite( $fh, implode( "\t", self::CABECALHO_RELATORIO ) . "\n" );
-
-		return $arquivo;
 	}
 }
