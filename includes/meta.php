@@ -66,6 +66,26 @@ function hbv_fields_for( $post_type ) {
 				'type'  => 'text',
 				'help'  => 'Texto livre: 12/03/1890, c. 1850, século XIX.',
 			),
+			'nascimento_dia'      => array(
+				'label' => 'Nascimento: dia',
+				'type'  => 'number',
+				'min'   => 1,
+				'max'   => 31,
+				'help'  => 'Servem para "Nasceram neste mês" e "Hoje na história". O campo de texto continua sendo o que aparece na ficha.',
+			),
+			'nascimento_mes'      => array(
+				'label'   => 'Nascimento: mês',
+				'type'    => 'select',
+				'options' => hbv_month_names(),
+				'help'    => 'Servem para "Nasceram neste mês" e "Hoje na história". O campo de texto continua sendo o que aparece na ficha.',
+			),
+			'nascimento_ano'      => array(
+				'label' => 'Nascimento: ano',
+				'type'  => 'number',
+				'min'   => 1500,
+				'max'   => 2200,
+				'help'  => 'Servem para "Nasceram neste mês" e "Hoje na história". O campo de texto continua sendo o que aparece na ficha.',
+			),
 			'local_nascimento' => array(
 				'label' => 'Local de nascimento',
 				'type'  => 'text',
@@ -73,6 +93,26 @@ function hbv_fields_for( $post_type ) {
 			'falecimento'     => array(
 				'label' => 'Falecimento',
 				'type'  => 'text',
+			),
+			'falecimento_dia'      => array(
+				'label' => 'Falecimento: dia',
+				'type'  => 'number',
+				'min'   => 1,
+				'max'   => 31,
+				'help'  => 'Servem para "Morreram neste mês" e "Hoje na história". O campo de texto continua sendo o que aparece na ficha.',
+			),
+			'falecimento_mes'      => array(
+				'label'   => 'Falecimento: mês',
+				'type'    => 'select',
+				'options' => hbv_month_names(),
+				'help'    => 'Servem para "Morreram neste mês" e "Hoje na história". O campo de texto continua sendo o que aparece na ficha.',
+			),
+			'falecimento_ano'      => array(
+				'label' => 'Falecimento: ano',
+				'type'  => 'number',
+				'min'   => 1500,
+				'max'   => 2200,
+				'help'  => 'Servem para "Morreram neste mês" e "Hoje na história". O campo de texto continua sendo o que aparece na ficha.',
 			),
 			'ocupacao'        => array(
 				'label' => 'Ocupação ou função',

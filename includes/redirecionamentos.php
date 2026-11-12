@@ -1,6 +1,6 @@
 <?php
 /**
- * Redirecionamentos 301 dos endereços antigos (posts convertidos e categorias).
+ * Redirecionamentos 301 dos endereços antigos (posts convertidos, termos de autoria, páginas de mês e categorias).
  *
  * Ver docs/MIGRADOR.md, seção "Módulo de redirecionamentos".
  *
@@ -75,14 +75,15 @@ function hbv_core_caminho_da_requisicao() {
 /**
  * Resolve um caminho antigo para a URL atual.
  *
- * Procura primeiro em posts convertidos (_hbv_caminho_antigo no post publicado)
- * e depois em termos da taxonomia hbv_autoria (_hbv_caminho_antigo no term meta:
- * páginas de bibliografia e discografia divididas em obras).
+ * Procura primeiro em posts convertidos (_hbv_caminho_antigo no post publicado),
+ * depois em termos da taxonomia hbv_autoria (_hbv_caminho_antigo no term meta:
+ * páginas de bibliografia e discografia divididas em obras) e, por fim, nos
+ * caminhos fixos da option hbv_core_caminhos_fixos (páginas de mês divididas).
  *
  * Função pública: também usada por "wp hbv migracao verificar".
  *
  * @param string $caminho Caminho antigo (ex.: /bairro-recreio/).
- * @return string|null URL de destino, ou null se nenhum post publicado nem termo de autoria tem esse caminho.
+ * @return string|null URL de destino, ou null se nada resolve esse caminho.
  */
 function hbv_core_resolver_caminho( $caminho ) {
 	global $wpdb;
@@ -107,27 +108,70 @@ function hbv_core_resolver_caminho( $caminho ) {
 		}
 	}
 
-	if ( ! taxonomy_exists( 'hbv_autoria' ) ) {
-		return null;
+	if ( taxonomy_exists( 'hbv_autoria' ) ) {
+		$term_id = (int) $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT tm.term_id FROM {$wpdb->termmeta} tm
+				INNER JOIN {$wpdb->term_taxonomy} tt ON tt.term_id = tm.term_id
+				WHERE tm.meta_key = %s AND tm.meta_value = %s AND tt.taxonomy = %s
+				LIMIT 1",
+				'_hbv_caminho_antigo',
+				$caminho,
+				'hbv_autoria'
+			)
+		);
+		if ( $term_id > 0 ) {
+			$url = get_term_link( $term_id, 'hbv_autoria' );
+			if ( is_string( $url ) && '' !== $url ) {
+				return $url;
+			}
+		}
 	}
 
-	$term_id = (int) $wpdb->get_var(
-		$wpdb->prepare(
-			"SELECT tm.term_id FROM {$wpdb->termmeta} tm
-			INNER JOIN {$wpdb->term_taxonomy} tt ON tt.term_id = tm.term_id
-			WHERE tm.meta_key = %s AND tm.meta_value = %s AND tt.taxonomy = %s
-			LIMIT 1",
-			'_hbv_caminho_antigo',
-			$caminho,
-			'hbv_autoria'
-		)
-	);
-	if ( $term_id < 1 ) {
-		return null;
+	return hbv_core_resolver_caminho_fixo( $caminho );
+}
+
+/**
+ * Caminhos fixos: endereço antigo (normalizado) => URL de destino relativa à home.
+ *
+ * Guardados na option hbv_core_caminhos_fixos (autoload). Usados por páginas que
+ * não viram um post nem um termo, como as páginas de mês (/janeiro/ vai para
+ * /datas-e-fatos/?hbv_mes=1). Só entram entradas de texto que começam com uma
+ * barra (nunca endereço de outro site).
+ *
+ * @return array Caminho normalizado => URL relativa à home (ex.: '/datas-e-fatos/?hbv_mes=1').
+ */
+function hbv_core_caminhos_fixos() {
+	$todos = get_option( 'hbv_core_caminhos_fixos', array() );
+	if ( ! is_array( $todos ) ) {
+		return array();
 	}
 
-	$url = get_term_link( $term_id, 'hbv_autoria' );
-	return ( is_string( $url ) && '' !== $url ) ? $url : null;
+	$validos = array();
+	foreach ( $todos as $caminho => $relativo ) {
+		if ( ! is_string( $caminho ) || ! is_string( $relativo ) ) {
+			continue;
+		}
+		if ( 0 !== strpos( $relativo, '/' ) || 0 === strpos( $relativo, '//' ) ) {
+			continue;
+		}
+		$validos[ $caminho ] = $relativo;
+	}
+	return $validos;
+}
+
+/**
+ * Resolve um caminho antigo pela lista de caminhos fixos.
+ *
+ * @param string $caminho Caminho já normalizado.
+ * @return string|null URL de destino (home_url + caminho relativo) ou null.
+ */
+function hbv_core_resolver_caminho_fixo( $caminho ) {
+	$fixos = hbv_core_caminhos_fixos();
+	if ( ! isset( $fixos[ $caminho ] ) ) {
+		return null;
+	}
+	return home_url( $fixos[ $caminho ] );
 }
 
 /**

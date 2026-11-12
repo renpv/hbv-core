@@ -60,6 +60,10 @@ antigos (módulo `includes/redirecionamentos.php`, sempre ativo; desligável com
 Desde a 0.3.0, `wp hbv migracao obras` divide as páginas de bibliografia e discografia em uma
 obra por livro ou disco (taxonomia Autoria) e `wp hbv migracao titulos` aplica títulos revisados.
 
+Desde a 0.4.0, `wp hbv migracao meses` divide as 12 páginas de mês (janeiro a dezembro) em fatos
+(`hbv_fato`), grava dia e mês de nascimento e falecimento nas biografias e guarda o texto de cada
+mês na option `hbv_meses`; o endereço antigo (`/janeiro/`) redireciona por caminho fixo.
+
 ## Próximos módulos (plano de modernização)
 
 Compartilhar e Open Graph, como citar, dados
