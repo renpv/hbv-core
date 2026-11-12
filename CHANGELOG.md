@@ -24,8 +24,16 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/). 
 - `wp hbv revisao importar <arquivo.tsv> [--simular] [--lote=<nome>]`, `status`,
   `exportar [--situacao=<s>] [--tipo=<t>]` e `remover --lote=<nome> [--yes]`. Relatório da importação em
   `uploads/hbv-migracao/<lote>.tsv`.
+- Subpágina **Revisão editorial > Importar e exportar** (capability `manage_options`), para homologação
+  e produção, que não têm WP-CLI: importar `.tsv` por upload (até 5 MB, "Só simular" marcado por
+  padrão, relatório em `uploads/hbv-migracao/` e resultado na tela por 10 minutos), baixar o TSV de
+  exportação em blocos (`revisao-AAAAMMDD-HHMMSS.tsv`) e remover os pendentes de um lote, com
+  confirmação. A lógica de importar e exportar ficou na classe (`HBV_Revisao::importar_tsv()`,
+  `exportar_tsv()`, `decodificar()`, `codificar()`) e o comando WP-CLI delega a ela.
+- Importação aceita `link` com `para` vazio (a revisora informa o endereço na tela; a tela mostra
+  "Trocar o link X por um endereço que você informa abaixo (ou remover o link)").
 - Novos arquivos: `includes/revisao/class-hbv-revisao.php`, `includes/revisao/class-hbv-revisao-lista.php`,
-  `includes/revisao/admin.php`, `includes/cli/class-hbv-revisao-command.php`, `assets/admin-revisao.css`
+  `includes/revisao/admin.php`, `includes/revisao/admin-transferencia.php`, `includes/cli/class-hbv-revisao-command.php`, `assets/admin-revisao.css`
   (só carregado na tela da revisão) e `docs/REVISAO.md`.
 
 ## [0.7.0] - 2026-11-12

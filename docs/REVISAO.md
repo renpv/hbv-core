@@ -84,7 +84,7 @@ sugestão de publicar.
 ### Como funciona
 
 Cada caso é uma linha da tabela `{prefixo}hbv_revisao`. Um script externo (Python) gera um TSV
-com os casos; o WP-CLI importa; a revisora decide na tela. A tabela é criada na ativação do plugin e,
+com os casos; a importação é feita pelo painel (ou pelo WP-CLI, no ambiente local); a revisora decide na tela. A tabela é criada na ativação do plugin e,
 como o plugin já está ativo nos sites, também no primeiro acesso ao painel (ou primeiro comando
 WP-CLI) depois da atualização para a 0.8.0: a option `hbv_core_revisao_db` guarda a versão do
 esquema e, quando ela difere da do código, a tabela, a capability e o papel são conferidos de novo.
@@ -120,7 +120,28 @@ Parâmetros por ação:
 | `publicar` | `{}` | Publica o conteúdo se estiver em rascunho ou pendente. |
 | `nenhuma` | `{}` | Sem botão de aplicar: só "Resolvi à mão" e "Rejeitar". |
 
-### Comandos
+### Importar e exportar pelo painel (homologação e produção)
+
+Em homologação e produção não há WP-CLI (a hospedagem não tem SSH): use o menu
+**Revisão editorial > Importar e exportar**. A subpágina exige a capability `manage_options`
+(administradores); o papel "Revisor(a) de conteúdo" não a tem e não vê essa página.
+
+- **Importar casos**: envie o `.tsv` (extensão `.tsv` ou `.txt`, até 5 MB). O nome do lote é opcional
+  (a-z, 0-9 e hífen) e a caixa **Só simular** vem marcada: rode primeiro assim, confira o resultado
+  e só depois desmarque para gravar. O resultado mostra as contagens por tipo e até 50 linhas com
+  problema, e o relatório completo vai para `wp-content/uploads/hbv-migracao/<lote>.tsv` (como no
+  CLI). O resultado na tela dura 10 minutos. Arquivo maior que 5 MB: divida em partes.
+- **Exportar casos**: baixa `revisao-AAAAMMDD-HHMMSS.tsv` no mesmo formato do `wp hbv revisao exportar`,
+  com filtros opcionais de situação e tipo.
+- **Remover os pendentes de um lote**: escolha o lote (a lista mostra quantos pendentes ele tem) e
+  marque a confirmação. Casos já decididos ficam.
+
+Se o servidor limitar o tamanho de envio (`upload_max_filesize`) abaixo de 5 MB, a tela avisa que o
+arquivo é grande demais.
+
+### Comandos (ambiente local)
+
+O WP-CLI faz o mesmo que a subpágina e usa o mesmo código. Vale no ambiente local.
 
 ```bash
 # Conferir o arquivo sem gravar
