@@ -71,6 +71,13 @@ Desde a 0.6.0, o `campos` também define o pai de um post hierárquico (`post_pa
 
 Desde a 0.7.0, `wp hbv migracao links` reescreve os links internos dos textos para os endereços novos (com relatório dos não resolvidos, desfazer por lote e `limpar` dos originais).
 
+## Revisão editorial
+
+Desde a 0.8.0, o menu **Revisão editorial** reúne os casos duvidosos que a migração deixou, para uma
+revisora (papel "Revisor(a) de conteúdo", capability `hbv_revisar`) aplicar a sugestão, resolver à mão
+ou rejeitar. Os casos são importados por `wp hbv revisao importar` (TSV gerado fora). Guia para quem
+revisa e para quem administra em [`docs/REVISAO.md`](docs/REVISAO.md).
+
 ## Próximos módulos (plano de modernização)
 
 Compartilhar e Open Graph, como citar, dados

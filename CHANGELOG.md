@@ -3,6 +3,31 @@
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/). Versões em
 [SemVer](https://semver.org/lang/pt-BR/).
 
+## [0.8.0] - 2026-11-12
+
+### Adicionado
+- Área **Revisão editorial** (menu de primeiro nível, ícone de visto, bolha com o número de pendentes):
+  uma tela para a revisora decidir os casos duvidosos que a migração deixou (papel incerto, link
+  quebrado, data divergente, nome sem biografia, duplicado, obra sem capa e outros). Cada caso é uma
+  linha da nova tabela `{prefixo}hbv_revisao` (criada com `dbDelta` na ativação e em `admin_init`/WP-CLI
+  quando a option `hbv_core_revisao_db` está desatualizada, porque o plugin já está ativo nos sites).
+- Lista com views (Pendentes, Aplicados, Rejeitados, Resolvidos, Todos), filtro por tipo, busca e ações
+  em massa ("Marcar como resolvido" e "Rejeitar"); tela do caso com evidência, sugestão em linguagem
+  simples, valor editável, observação e histórico; formulário em `admin-post.php` com nonce por caso.
+- Ações de "Aplicar sugestão", sempre validadas no servidor: `termo` (acrescenta termo existente),
+  `meta` (campo da ficha, com `hbv_sanitize_field()`), `link` (troca o `href` ou remove o `<a>` mantendo
+  o texto; grava com `wp_update_post`, que cria revisão do WordPress), `publicar` e `nenhuma`.
+  Exige `edit_post` (e `publish_post` para publicar) além da capability da tela. "Reabrir" volta o caso
+  a pendente e não desfaz alterações.
+- Capability `hbv_revisar` (dada ao administrador) e papel `hbv_revisor` ("Revisor(a) de conteúdo":
+  capabilities do editor mais `hbv_revisar`). Não são removidos ao desativar o plugin.
+- `wp hbv revisao importar <arquivo.tsv> [--simular] [--lote=<nome>]`, `status`,
+  `exportar [--situacao=<s>] [--tipo=<t>]` e `remover --lote=<nome> [--yes]`. Relatório da importação em
+  `uploads/hbv-migracao/<lote>.tsv`.
+- Novos arquivos: `includes/revisao/class-hbv-revisao.php`, `includes/revisao/class-hbv-revisao-lista.php`,
+  `includes/revisao/admin.php`, `includes/cli/class-hbv-revisao-command.php`, `assets/admin-revisao.css`
+  (só carregado na tela da revisão) e `docs/REVISAO.md`.
+
 ## [0.7.0] - 2026-11-12
 
 ### Adicionado
