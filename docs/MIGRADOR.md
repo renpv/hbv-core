@@ -558,6 +558,8 @@ links apontarem direto para os endereços novos.
 | c | `hbv_core_resolver_caminho()` (posts convertidos, termos de autoria, caminhos fixos como `/janeiro/`) | destino |
 | d | último segmento do caminho em `_wp_old_slug` de **um** post publicado (consulta preparada, `LIMIT 2`) | destino; com mais de um: "ambíguo" |
 | e | categoria antiga (`hbv_core_slug_categoria_antiga()` + `hbv_core_mapa_categorias`) | destino do mapa |
+| g | página de anexo sem `rel`: o último segmento é o slug de **um** anexo (com mais de um, vale o anexo cujo pai tem ou teve o slug do primeiro segmento) | `get_permalink( anexo )` |
+| h | caminho de um segmento só: **um único** post publicado cujo slug começa por ele, como faz o WordPress no 404 (`/a-cidade/` → `/a-cidade-de-boa-viagem-e-a-sua-urbanizacao/`) | destino |
 | f | nenhuma das anteriores | **não resolvido**: o link não é alterado e vai para o relatório |
 
 - Só troca se o destino for **diferente** do link atual (comparação sem esquema, sem fragmento e sem barra

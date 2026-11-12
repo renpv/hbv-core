@@ -901,6 +901,54 @@ trait HBV_Migracao_Links {
 			return $res( 'f', null, 'categoria antiga "' . $slug_categoria . '" sem destino' );
 		}
 
+		// g: página de anexo pelo slug do anexo (/pai-antigo/slug-do-anexo/ sem rel wp-att-ID).
+		if ( count( $segmentos ) >= 2 ) {
+			$ids = $wpdb->get_col(
+				$wpdb->prepare(
+					"SELECT ID FROM {$wpdb->posts} WHERE post_type = %s AND post_name = %s LIMIT 5",
+					'attachment',
+					strtolower( $ultimo )
+				)
+			);
+			$ids = array_map( 'intval', (array) $ids );
+			if ( count( $ids ) > 1 ) {
+				// Desempate: o anexo cujo pai tem (ou já teve) o slug do primeiro segmento.
+				$pai_slug = strtolower( (string) $segmentos[0] );
+				$filtrados = array();
+				foreach ( $ids as $aid ) {
+					$pai = (int) wp_get_post_parent_id( $aid );
+					if ( $pai > 0 && ( get_post_field( 'post_name', $pai ) === $pai_slug || in_array( $pai_slug, (array) get_post_meta( $pai, '_wp_old_slug' ), true ) ) ) {
+						$filtrados[] = $aid;
+					}
+				}
+				$ids = $filtrados;
+			}
+			if ( 1 === count( $ids ) ) {
+				$url = get_permalink( $ids[0] );
+				if ( is_string( $url ) && '' !== $url ) {
+					return $res( 'g', $url, '' );
+				}
+			}
+		}
+
+		// h: palpite como o do WordPress (redirect_guess_404_permalink): um único post publicado
+		// cujo slug começa pelo slug do link (ex.: /a-cidade/ -> /a-cidade-de-boa-viagem-e-.../).
+		if ( 1 === count( $segmentos ) && strlen( $ultimo ) >= 4 ) {
+			$ids = $wpdb->get_col(
+				$wpdb->prepare(
+					"SELECT ID FROM {$wpdb->posts} WHERE post_status = %s AND post_type NOT IN ('attachment','revision','nav_menu_item') AND post_name LIKE %s LIMIT 2",
+					'publish',
+					$wpdb->esc_like( strtolower( $ultimo ) ) . '%'
+				)
+			);
+			if ( 1 === count( (array) $ids ) ) {
+				$url = get_permalink( (int) $ids[0] );
+				if ( is_string( $url ) && '' !== $url ) {
+					return $res( 'h', $url, '' );
+				}
+			}
+		}
+
 		return $res( 'f', null, 'não resolvido' );
 	}
 

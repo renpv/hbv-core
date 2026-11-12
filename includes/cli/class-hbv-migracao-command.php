@@ -84,6 +84,8 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 		'c' => 'post convertido, autoria, caminho fixo',
 		'd' => 'slug antigo (_wp_old_slug)',
 		'e' => 'categoria antiga',
+		'g' => 'anexo pelo slug (sem rel wp-att-ID)',
+		'h' => 'palpite: único post cujo slug começa assim',
 		'f' => 'não resolvido',
 	);
 
