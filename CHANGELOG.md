@@ -3,6 +3,26 @@
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/). Versões em
 [SemVer](https://semver.org/lang/pt-BR/).
 
+## [0.7.0] - 2026-11-12
+
+### Adicionado
+- `wp hbv migracao links [--simular] [--lote=<nome>] [--limite=<n>] [--tipos=<lista>] [--host=<h1,h2>]`:
+  reescreve os links internos dos textos (`href` de `<a>` para o host do site ou os `--host`) para os
+  endereços novos. Regras, em ordem: a) anexo por `rel="wp-att-ID"`; b) já é o permalink atual (não
+  mexe); c) `hbv_core_resolver_caminho()`; d) slug antigo (`_wp_old_slug`, "ambíguo" se houver mais de
+  um); e) categoria antiga; f) não resolvido (o link não é alterado). Troca só o valor do `href`
+  (regex pontual; aspas, query, fragmento e o resto do HTML ficam byte a byte) e só quando o destino
+  difere do link atual. Guarda o original em `_hbv_migracao_links` (JSON por lote, com md5 do
+  original e do novo) e grava `post_content` direto (sem `post_modified`, revisão nem kses). Recusa
+  post já reescrito por outro lote. Relatórios `<lote>.tsv` e `<lote>-nao-resolvidos.tsv`.
+- `wp hbv migracao limpar --lote=<nome> [--yes]`: remove só o `conteudo_original` do registro de
+  links (mantém os md5), com confirmação; depois disso o `desfazer` do lote não é mais possível.
+- Novo arquivo `includes/cli/trait-hbv-migracao-links.php` (auxiliares do comando `links`).
+
+### Alterado
+- `desfazer` restaura o texto dos posts do lote `links` (só se o md5 atual for o gravado), `verificar`
+  confere md5 e links restantes resolvíveis, e `status` conta os posts reescritos por lote.
+
 ## [0.6.0] - 2026-11-12
 
 ### Adicionado

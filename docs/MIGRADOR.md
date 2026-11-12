@@ -534,6 +534,77 @@ Para o teste de `CHECKSUM TABLE` (`wp_posts`, `wp_postmeta`, `wp_term_relationsh
 desatualizado antes do lote, a recontagem o corrige (na gravação e no desfazer) e o checksum de
 `wp_term_taxonomy` difere por isso; recalcule as contagens antes de medir.
 
+## Links internos (0.7.0)
+
+Depois da migração, os textos ainda trazem links absolutos para os endereços antigos
+(`http://<host>/<slug-antigo>/`, `/category/x/`, `/janeiro/`, páginas de anexo
+`/<pai-antigo>/<anexo>/` com `rel="attachment wp-att-ID"`). O 301 já funciona; este comando faz os
+links apontarem direto para os endereços novos.
+
+### `wp hbv migracao links [--simular] [--lote=<nome>] [--limite=<n>] [--tipos=<lista>] [--host=<h1,h2>]`
+
+- Posts publicados de `post`, `page` e dos tipos do plugin (`--tipos` restringe), por ID crescente.
+  `--limite` conta posts (inclusive os sem links). Blocos de 100, com limpeza de cache entre eles.
+- Links considerados: `href` de `<a>` (aspas duplas ou simples) em http ou https, com host igual ao de
+  `home_url()` ou a um `--host` (padrão: `historiadeboaviagem.com.br,www.historiadeboaviagem.com.br`;
+  `--host` substitui o padrão, e o host de `home_url()` entra sempre). Ignora `/wp-content/`,
+  `/wp-admin/`, âncoras puras, `mailto:`, links externos, links com porta diferente da do site e links relativos.
+- Destino, nesta ordem (a primeira regra que decide vale):
+
+| Regra | Condição | Resultado |
+|---|---|---|
+| a | `rel` com `wp-att-<ID>` e o anexo existe | `get_permalink( ID )` |
+| b | o caminho já é o permalink atual de um post publicado (`url_to_postid()`; vale também `/slug/2/`) ou é a página inicial sem parâmetros | não mexe |
+| c | `hbv_core_resolver_caminho()` (posts convertidos, termos de autoria, caminhos fixos como `/janeiro/`) | destino |
+| d | último segmento do caminho em `_wp_old_slug` de **um** post publicado (consulta preparada, `LIMIT 2`) | destino; com mais de um: "ambíguo" |
+| e | categoria antiga (`hbv_core_slug_categoria_antiga()` + `hbv_core_mapa_categorias`) | destino do mapa |
+| g | página de anexo sem `rel`: o último segmento é o slug de **um** anexo (com mais de um, vale o anexo cujo pai tem ou teve o slug do primeiro segmento) | `get_permalink( anexo )` |
+| h | caminho de um segmento só: **um único** post publicado cujo slug começa por ele, como faz o WordPress no 404 (`/a-cidade/` → `/a-cidade-de-boa-viagem-e-a-sua-urbanizacao/`) | destino |
+| f | nenhuma das anteriores | **não resolvido**: o link não é alterado e vai para o relatório |
+
+- Só troca se o destino for **diferente** do link atual (comparação sem esquema, sem fragmento e sem barra
+  final; host e caminho em minúsculas). Então `http://` para o mesmo endereço já atual não é trocado.
+- Query string e fragmento (`#`) do link original são mantidos (se o destino já tem `?`, a query original
+  entra depois de `&amp;`). O destino é absoluto (`home_url()`) e escapado para atributo.
+- A troca é pontual: só o valor do `href`, por posição, sem DOMDocument; aspas, ordem dos atributos e o
+  resto do HTML ficam byte a byte. Os atributos de cada `<a>` são lidos um a um (um `href=` dentro do
+  `title`, por exemplo, não conta).
+- **Gravação**, por post: (1) guarda o original em `_hbv_migracao_links` e confere a leitura de volta;
+  (2) atualiza `post_content` por `$wpdb->update` (sem `post_modified`, revisão nem kses) e confere o
+  md5 lido; (3) `clean_post_cache()`. Se algo falhar, devolve o original e apaga o registro. Texto com
+  UTF-8 inválido é recusado (não dá para guardar o original em JSON sem alterá-lo).
+  Registro: `{"<lote>":{"data":"…","md5_original":"…","md5_novo":"…","conteudo_original":"…"}}`.
+- Post que já tem registro de outro lote (ou do mesmo) é recusado: "já reescrito pelo lote X".
+- Relatórios em `wp-content/uploads/hbv-migracao/`:
+  - `<lote>.tsv`: `id, tipo, links_internos, trocados, ja_atuais, nao_resolvidos, resultado`
+    (`reescrito`, `sem_alteracao`, `sem_links`, `recusado: …`, `erro: …`);
+  - `<lote>-nao-resolvidos.tsv`: `id, titulo, href, motivo`. São links quebrados que o editor corrige à mão.
+  - Na simulação os dois também são escritos, com o sufixo `-simulacao` (não gravam nada no banco).
+- Resumo: posts (analisados, reescritos, sem alteração, sem links, recusados), links (internos, trocados,
+  já atuais, não resolvidos), tabela por regra (a a f) e motivos. A simulação mostra 10 exemplos
+  (antes → depois).
+
+### `desfazer`, `verificar`, `status` e `limpar` (links)
+
+- `desfazer --lote=X` (e `--todos`): restaura `post_content` a partir de `conteudo_original`, **só se** o md5 do
+  texto atual for `md5_novo` (senão avisa e não restaura; o registro fica), direto por `$wpdb`; remove a
+  entrada do lote (apaga o meta se fica vazio). Objetivo: `CHECKSUM TABLE` de `wp_posts` e `wp_postmeta`
+  igual ao de antes do lote. Se os originais já foram removidos pelo `limpar`, avisa e mantém o registro.
+- `verificar --lote=X [--host=…]`: para cada post do lote, confere `md5(post_content) = md5_novo` e que nenhum
+  link interno restante ainda seria trocado pelas regras a, c, d ou e. Na lista de falhas, `caminho_antigo`
+  traz o href e `esperado` o destino.
+- `status`: `links internos (posts reescritos)` por lote, e `links internos (originais já removidos)`.
+- `limpar --lote=X [--yes]`: remove só o `conteudo_original` do registro (mantém data e md5s) para liberar
+  espaço depois de aprovado o lote. Mostra quantos posts e quantos bytes, e pede confirmação
+  (`WP_CLI::confirm`; `--yes` ou `--sim` dispensam). **Depois disso o `desfazer` do lote não é mais possível**,
+  e como o registro fica, esses posts não podem ser reescritos de novo por outro lote.
+
+Fluxo sugerido: `links --simular` → corrigir/aceitar o relatório de não resolvidos → `links --lote=links-1 --limite=50`
+(teste) → `verificar` → `desfazer` e rodar tudo → `verificar` → aprovar → `limpar`.
+
+Não tratados: links relativos (`/slug/`), `href` sem aspas, URLs em blocos (`<!-- wp:… {"url":…} -->`),
+shortcodes, `<area>` e campos que não são `post_content`.
+
 ## Fora desta versão (próximos PRs)
 
 - Filtro `hbv_mes` na listagem de `hbv_fato` e as listas "Nasceram/Morreram neste mês" geradas dos
@@ -541,7 +612,6 @@ desatualizado antes do lote, a recontagem o corrige (na gravação e no desfazer
 - Extração dos valores dos campos da ficha (nascimento, falecimento, local, papel; tipo e lei do
   logradouro; distrito da localidade). A gravação existe (`campos`, incluindo `post_parent` e `tax:*`); falta gerar os TSV. Regras
   primeiro; casos fora do padrão por modelo pequeno, com validação.
-- Reescrever links internos antigos dentro dos textos.
 
 ## Regras do projeto que valem aqui
 

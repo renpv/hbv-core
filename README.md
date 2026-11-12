@@ -69,6 +69,8 @@ de um TSV (`id`, `campo`, `valor`, `modo`, `fonte`), com simulação, relatório
 
 Desde a 0.6.0, o `campos` também define o pai de um post hierárquico (`post_parent`, ex.: localidade dentro de distrito) e acrescenta termos de taxonomia (`tax:hbv_papel`), com desfazer por lote.
 
+Desde a 0.7.0, `wp hbv migracao links` reescreve os links internos dos textos para os endereços novos (com relatório dos não resolvidos, desfazer por lote e `limpar` dos originais).
+
 ## Próximos módulos (plano de modernização)
 
 Compartilhar e Open Graph, como citar, dados

@@ -3,7 +3,7 @@
  * Plugin Name:       HBV Core — Acervo História de Boa Viagem
  * Plugin URI:        https://www.historiadeboaviagem.com.br/
  * Description:       Modelo de conteúdo do acervo (biografias, lugares, logradouros, datas e fatos, obras, instituições), taxonomias de tema, período e autoria e campos da ficha. Independente do tema: trocar de tema não esconde o conteúdo.
- * Version:           0.6.0
+ * Version:           0.7.0
  * Requires at least: 6.4
  * Requires PHP:      7.4
  * Author:            História de Boa Viagem
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'HBV_CORE_VERSION', '0.6.0' );
+define( 'HBV_CORE_VERSION', '0.7.0' );
 define( 'HBV_CORE_FILE', __FILE__ );
 define( 'HBV_CORE_DIR', plugin_dir_path( __FILE__ ) );
 
