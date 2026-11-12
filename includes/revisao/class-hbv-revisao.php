@@ -654,8 +654,9 @@ class HBV_Revisao {
 					return $falha( 'parametros de "link" exigem de e para' );
 				}
 				$remover = ! empty( $p['remover'] );
-				if ( ! $remover && '' === self::url_valida( $p['para'] ) ) {
-					return $falha( '"para" deve ser um endereço http, https ou começar com /' );
+				// "para" vazio é aceito na importação: a revisora informa o endereço na tela (a aplicação exige).
+				if ( ! $remover && '' !== $p['para'] && '' === self::url_valida( $p['para'] ) ) {
+					return $falha( '"para" deve ser vazio, um endereço http, https ou começar com /' );
 				}
 				$p = array(
 					'de'   => $p['de'],

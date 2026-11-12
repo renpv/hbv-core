@@ -116,7 +116,7 @@ Parâmetros por ação:
 |---|---|---|
 | `termo` | `{"taxonomia":"hbv_papel","termo":"vereador"}` | Acrescenta o termo (pelo slug, que tem de existir) ao conteúdo, sem tirar os que ele já tem. A taxonomia tem de ser do tipo do conteúdo. |
 | `meta` | `{"campo":"nascimento","valor":"12/03/1890"}` | Grava o campo da ficha (nome sem o prefixo `hbv_`; `fontes` também vale). O valor passa por `hbv_sanitize_field()`. |
-| `link` | `{"de":"http://.../x","para":"/biografias/x/"}` ou `{"de":"...","para":"","remover":1}` | Troca o `href` exatamente igual a `de` por `para` (http, https ou começando com `/`), ou tira o `<a>` e mantém o texto. Grava com `wp_update_post`, que cria uma revisão do WordPress. |
+| `link` | `{"de":"http://.../x","para":"/biografias/x/"}` ou `{"de":"...","para":"","remover":1}` | Troca o `href` exatamente igual a `de` por `para` (http, https ou começando com `/`), ou tira o `<a>` e mantém o texto. `para` pode vir vazio quando não há sugestão: a revisora informa o endereço na tela (sem ele, só remover). Grava com `wp_update_post`, que cria uma revisão do WordPress. |
 | `publicar` | `{}` | Publica o conteúdo se estiver em rascunho ou pendente. |
 | `nenhuma` | `{}` | Sem botão de aplicar: só "Resolvi à mão" e "Rejeitar". |
 
