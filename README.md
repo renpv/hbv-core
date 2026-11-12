@@ -67,6 +67,8 @@ mês na option `hbv_meses`; o endereço antigo (`/janeiro/`) redireciona por cam
 Desde a 0.5.0, `wp hbv migracao campos` grava campos da ficha (post meta) em qualquer tipo, a partir
 de um TSV (`id`, `campo`, `valor`, `modo`, `fonte`), com simulação, relatório e desfazer por lote.
 
+Desde a 0.6.0, o `campos` também define o pai de um post hierárquico (`post_parent`, ex.: localidade dentro de distrito) e acrescenta termos de taxonomia (`tax:hbv_papel`), com desfazer por lote.
+
 ## Próximos módulos (plano de modernização)
 
 Compartilhar e Open Graph, como citar, dados

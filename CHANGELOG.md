@@ -3,6 +3,29 @@
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/). Versões em
 [SemVer](https://semver.org/lang/pt-BR/).
 
+## [0.6.0] - 2026-11-12
+
+### Adicionado
+- `wp hbv migracao campos` aceita duas pseudo-chaves na coluna `campo`:
+  - `post_parent`: define o pai de um post de tipo hierárquico (na prática `hbv_lugar`). O valor é o
+    ID de um post publicado do mesmo tipo; recusa o próprio post e descendentes (sobe a cadeia de
+    pais, até 50 passos). `preencher` grava só se o pai atual é 0; `sobrescrever` grava. Grava direto
+    em `wp_posts.post_parent` (sem `post_modified`, revisão nem hooks de `save_post`) e limpa o cache
+    do post. O relatório traz o permalink anterior e o novo.
+  - `tax:<taxonomia>` (ex.: `tax:hbv_papel`): acrescenta um termo existente ao post (valor = slug; não
+    cria termos; a taxonomia tem de ser do tipo do post). Usa `wp_set_object_terms` com acréscimo.
+    Várias linhas do mesmo post com termos diferentes da mesma taxonomia são válidas.
+- O registro `_hbv_migracao_campos` ganha as chaves `post_parent` (pai anterior, inteiro) e
+  `tax:<taxonomia>` (lista de term_ids acrescentados pelo lote).
+
+### Alterado
+- `desfazer` restaura o pai (só se ainda é o gravado) e remove só os termos acrescentados pelo lote
+  (se ainda estiverem no post), recontando os termos. `verificar` confere pai e termos. `status`
+  conta um item por termo acrescentado. A regra de duplicatas deixa de recusar termos diferentes da
+  mesma taxonomia no mesmo post.
+- O permalink de um `hbv_lugar` muda quando o pai muda; `_hbv_caminho_antigo` continua resolvendo
+  (o resolvedor usa `get_permalink`, que já devolve o endereço novo).
+
 ## [0.5.0] - 2026-11-12
 
 ### Adicionado
