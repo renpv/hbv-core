@@ -889,7 +889,8 @@ trait HBV_Migracao_Links {
 		// d: slug antigo do WordPress (_wp_old_slug) de um post publicado.
 		$segmentos = array_values( array_filter( explode( '/', trim( $caminho_dec, '/' ) ), 'strlen' ) );
 		$ultimo    = $segmentos ? (string) end( $segmentos ) : '';
-		if ( '' !== $ultimo ) {
+		$com_base  = count( $segmentos ) >= 2 && in_array( strtolower( (string) $segmentos[0] ), $this->links_bases_atuais(), true );
+		if ( '' !== $ultimo && ! $com_base ) {
 			$candidatos = array_unique(
 				array(
 					strtolower( $ultimo ),
@@ -937,7 +938,7 @@ trait HBV_Migracao_Links {
 
 		// g: página de anexo pelo slug do anexo (/pai-antigo/slug-do-anexo/ sem rel wp-att-ID).
 		// Não vale para caminhos que começam por uma base atual (/autoria/x/, /lugares/x/, /tema/x/…).
-		if ( count( $segmentos ) >= 2 && ! in_array( strtolower( (string) $segmentos[0] ), $this->links_bases_atuais(), true ) ) {
+		if ( count( $segmentos ) >= 2 && ! $com_base ) {
 			$ids = $wpdb->get_col(
 				$wpdb->prepare(
 					"SELECT ID FROM {$wpdb->posts} WHERE post_type = %s AND post_name = %s LIMIT 5",
