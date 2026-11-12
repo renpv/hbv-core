@@ -802,6 +802,34 @@ trait HBV_Migracao_Links {
 	}
 
 	/**
+	 * Bases de endereço atuais (rewrite slug dos tipos e das taxonomias públicas), em minúsculas.
+	 *
+	 * @return array
+	 */
+	private function links_bases_atuais() {
+		static $bases = null;
+		if ( null !== $bases ) {
+			return $bases;
+		}
+		$bases = array();
+		foreach ( get_post_types( array( 'public' => true ), 'objects' ) as $tipo ) {
+			if ( is_array( $tipo->rewrite ) && ! empty( $tipo->rewrite['slug'] ) ) {
+				$bases[] = strtolower( trim( $tipo->rewrite['slug'], '/' ) );
+			}
+			if ( is_string( $tipo->has_archive ) && '' !== $tipo->has_archive ) {
+				$bases[] = strtolower( trim( $tipo->has_archive, '/' ) );
+			}
+		}
+		foreach ( get_taxonomies( array( 'public' => true ), 'objects' ) as $tax ) {
+			if ( is_array( $tax->rewrite ) && ! empty( $tax->rewrite['slug'] ) ) {
+				$bases[] = strtolower( trim( $tax->rewrite['slug'], '/' ) );
+			}
+		}
+		$bases = array_values( array_unique( array_filter( $bases ) ) );
+		return $bases;
+	}
+
+	/**
 	 * Regras b a f para um caminho (com cache por caminho normalizado).
 	 *
 	 * @param string $caminho     Caminho normalizado, sem a instalação.
@@ -908,7 +936,8 @@ trait HBV_Migracao_Links {
 		}
 
 		// g: página de anexo pelo slug do anexo (/pai-antigo/slug-do-anexo/ sem rel wp-att-ID).
-		if ( count( $segmentos ) >= 2 ) {
+		// Não vale para caminhos que começam por uma base atual (/autoria/x/, /lugares/x/, /tema/x/…).
+		if ( count( $segmentos ) >= 2 && ! in_array( strtolower( (string) $segmentos[0] ), $this->links_bases_atuais(), true ) ) {
 			$ids = $wpdb->get_col(
 				$wpdb->prepare(
 					"SELECT ID FROM {$wpdb->posts} WHERE post_type = %s AND post_name = %s LIMIT 5",
