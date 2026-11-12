@@ -189,6 +189,31 @@ function hbv_fields_for( $post_type ) {
 				'label' => 'Link para a obra',
 				'type'  => 'url',
 			),
+			'edicao'  => array(
+				'label' => 'Edição',
+				'type'  => 'text',
+			),
+			'isbn'    => array(
+				'label' => 'ISBN',
+				'type'  => 'text',
+			),
+			'paginas' => array(
+				'label' => 'Páginas',
+				'type'  => 'text',
+			),
+			'tiragem' => array(
+				'label' => 'Tiragem',
+				'type'  => 'text',
+			),
+			'estudio' => array(
+				'label' => 'Estúdio',
+				'type'  => 'text',
+			),
+			'musicas' => array(
+				'label'  => 'Músicas',
+				'type'   => 'textarea',
+				'help'   => 'Uma faixa por linha.',
+			),
 		),
 		'hbv_instituicao' => array(
 			'rede'      => array(

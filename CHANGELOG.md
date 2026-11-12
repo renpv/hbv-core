@@ -3,6 +3,26 @@
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/). Versões em
 [SemVer](https://semver.org/lang/pt-BR/).
 
+## [0.3.0] - 2026-11-11
+
+### Adicionado
+- Taxonomia `hbv_autoria` ("Autoria", só em `hbv_obra`, endereço `/autoria/<termo>/`) com term
+  meta `hbv_pessoa` (ID da biografia) e `hbv_formacao`.
+- Campos de `hbv_obra`: edição, ISBN, páginas, tiragem, estúdio e músicas.
+- `wp hbv migracao obras <plano-obras.jsonl> <plano-autores.jsonl>`: divide as páginas
+  "Bibliografia" e "Discografia" em uma obra por livro ou disco, cria os termos de autoria,
+  guarda a página original como rascunho e converte as páginas de banda sem discos em
+  instituição. Com `--simular`, lotes e relatório TSV.
+- `wp hbv migracao titulos <arquivo.tsv>`: aplica títulos revisados nas obras criadas pelo
+  migrador (só mudança de maiúsculas e minúsculas), guardando o original.
+- `desfazer`, `verificar` e `status` passam a tratar obras, páginas divididas e termos de autoria.
+
+### Alterado
+- `hbv_core_resolver_caminho()` também resolve `_hbv_caminho_antigo` de termos de `hbv_autoria`
+  (301 do endereço antigo da página para a lista de obras do autor).
+- A página dividida muda de status por atualização direta: não ganha revisão, `_encloseme`
+  nem nova data de modificação, e o `desfazer` devolve o banco idêntico.
+
 ## [0.2.0] - 2026-11-11
 
 ### Adicionado

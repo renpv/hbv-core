@@ -57,6 +57,9 @@ antigos (módulo `includes/redirecionamentos.php`, sempre ativo; desligável com
 `hbv_core_redirecionar`). Rodam só no ambiente local. Fluxo, formato do plano e regras em
 [`docs/MIGRADOR.md`](docs/MIGRADOR.md); ajuda com `wp help hbv migracao converter`.
 
+Desde a 0.3.0, `wp hbv migracao obras` divide as páginas de bibliografia e discografia em uma
+obra por livro ou disco (taxonomia Autoria) e `wp hbv migracao titulos` aplica títulos revisados.
+
 ## Próximos módulos (plano de modernização)
 
 Compartilhar e Open Graph, como citar, dados
