@@ -3,7 +3,7 @@
  * Plugin Name:       HBV Core — Acervo História de Boa Viagem
  * Plugin URI:        https://www.historiadeboaviagem.com.br/
  * Description:       Modelo de conteúdo do acervo (biografias, lugares, logradouros, datas e fatos, obras, instituições), taxonomias de tema e período e campos da ficha. Independente do tema: trocar de tema não esconde o conteúdo.
- * Version:           0.1.0
+ * Version:           0.2.0
  * Requires at least: 6.4
  * Requires PHP:      7.4
  * Author:            História de Boa Viagem
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'HBV_CORE_VERSION', '0.1.0' );
+define( 'HBV_CORE_VERSION', '0.2.0' );
 define( 'HBV_CORE_FILE', __FILE__ );
 define( 'HBV_CORE_DIR', plugin_dir_path( __FILE__ ) );
 
@@ -48,11 +48,21 @@ function hbv_core_load() {
 	require_once HBV_CORE_DIR . 'includes/post-types.php';
 	require_once HBV_CORE_DIR . 'includes/taxonomies.php';
 	require_once HBV_CORE_DIR . 'includes/meta.php';
+	require_once HBV_CORE_DIR . 'includes/redirecionamentos.php';
 
 	$loaded = true;
 	return $loaded;
 }
 add_action( 'after_setup_theme', 'hbv_core_load', 1 );
+
+/**
+ * Comandos WP-CLI do migrador (só carregados no WP-CLI).
+ * Ver docs/MIGRADOR.md.
+ */
+if ( defined( 'WP_CLI' ) && WP_CLI ) {
+	require_once HBV_CORE_DIR . 'includes/cli/class-hbv-migracao-command.php';
+	WP_CLI::add_command( 'hbv migracao', 'HBV_Migracao_Command' );
+}
 
 /**
  * Aviso de conflito com o tema 1.0.x.

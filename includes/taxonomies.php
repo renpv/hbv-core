@@ -224,6 +224,9 @@ function hbv_seed_terms() {
 			'Açude'      => array( 'slug' => 'acude' ),
 			'Necrópole'  => array( 'slug' => 'necropole' ),
 			'Acesso e rodovia' => array( 'slug' => 'acesso' ),
+			'Rio e riacho' => array( 'slug' => 'rio' ),
+			'Ponto turístico e monumento' => array( 'slug' => 'ponto-turistico' ),
+			'Equipamento esportivo' => array( 'slug' => 'equipamento-esportivo' ),
 		),
 		'hbv_papel'            => array(
 			'Prefeito'      => array( 'slug' => 'prefeito' ),
@@ -290,6 +293,11 @@ function hbv_seed_terms() {
 					'Prefeitura e Câmara' => array( 'slug' => 'prefeitura-e-camara' ),
 				),
 			),
+			'Comércio, indústria e serviços' => array( 'slug' => 'comercio-e-servicos' ),
+			'Serviços públicos' => array( 'slug' => 'servicos-publicos' ),
+			'Comunicação' => array( 'slug' => 'comunicacao' ),
+			'Associações e entidades' => array( 'slug' => 'associacoes' ),
+			'Cultura'   => array( 'slug' => 'cultura' ),
 		),
 	);
 
