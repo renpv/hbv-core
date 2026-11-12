@@ -20,6 +20,8 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/). 
 ### Alterado
 - `hbv_core_resolver_caminho()` também resolve `_hbv_caminho_antigo` de termos de `hbv_autoria`
   (301 do endereço antigo da página para a lista de obras do autor).
+- A página dividida muda de status por atualização direta: não ganha revisão, `_encloseme`
+  nem nova data de modificação, e o `desfazer` devolve o banco idêntico.
 
 ## [0.2.0] - 2026-11-11
 
