@@ -3,7 +3,7 @@
  * Plugin Name:       HBV Core — Acervo História de Boa Viagem
  * Plugin URI:        https://www.historiadeboaviagem.com.br/
  * Description:       Modelo de conteúdo do acervo (biografias, lugares, logradouros, datas e fatos, obras, instituições), taxonomias de tema, período e autoria e campos da ficha. Independente do tema: trocar de tema não esconde o conteúdo.
- * Version:           0.7.0
+ * Version:           0.8.0
  * Requires at least: 6.4
  * Requires PHP:      7.4
  * Author:            História de Boa Viagem
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'HBV_CORE_VERSION', '0.7.0' );
+define( 'HBV_CORE_VERSION', '0.8.0' );
 define( 'HBV_CORE_FILE', __FILE__ );
 define( 'HBV_CORE_DIR', plugin_dir_path( __FILE__ ) );
 
@@ -50,18 +50,29 @@ function hbv_core_load() {
 	require_once HBV_CORE_DIR . 'includes/meta.php';
 	require_once HBV_CORE_DIR . 'includes/redirecionamentos.php';
 
+	// Revisão editorial: a camada de dados sempre; a tela só no painel.
+	require_once HBV_CORE_DIR . 'includes/revisao/class-hbv-revisao.php';
+	if ( is_admin() ) {
+		require_once HBV_CORE_DIR . 'includes/revisao/admin.php';
+	}
+
 	$loaded = true;
 	return $loaded;
 }
 add_action( 'after_setup_theme', 'hbv_core_load', 1 );
 
 /**
- * Comandos WP-CLI do migrador (só carregados no WP-CLI).
- * Ver docs/MIGRADOR.md.
+ * Comandos WP-CLI do migrador e da revisão editorial (só carregados no WP-CLI).
+ * Ver docs/MIGRADOR.md e docs/REVISAO.md.
  */
 if ( defined( 'WP_CLI' ) && WP_CLI ) {
 	require_once HBV_CORE_DIR . 'includes/cli/class-hbv-migracao-command.php';
 	WP_CLI::add_command( 'hbv migracao', 'HBV_Migracao_Command' );
+
+	// Revisão editorial (ver docs/REVISAO.md). A camada de dados também vale no CLI.
+	require_once HBV_CORE_DIR . 'includes/revisao/class-hbv-revisao.php';
+	require_once HBV_CORE_DIR . 'includes/cli/class-hbv-revisao-command.php';
+	WP_CLI::add_command( 'hbv revisao', 'HBV_Revisao_Command' );
 }
 
 /**
@@ -95,6 +106,7 @@ function hbv_core_activate() {
 	}
 	hbv_register_post_types();
 	hbv_seed_terms(); // Registra as taxonomias antes de inserir os termos.
+	HBV_Revisao::atualizar_esquema( true ); // Tabela da revisão editorial, capability e papel.
 	flush_rewrite_rules();
 }
 register_activation_hook( HBV_CORE_FILE, 'hbv_core_activate' );
