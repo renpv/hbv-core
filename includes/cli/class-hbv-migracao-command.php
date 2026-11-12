@@ -48,6 +48,13 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 	const MODOS_CAMPOS     = array( 'preencher', 'sobrescrever' );
 
 	/**
+	 * Pseudo-chaves do comando "campos" (0.6.0): pai do post e termo de taxonomia.
+	 */
+	const CAMPO_PAI    = 'post_parent';
+	const PREFIXO_TAX  = 'tax:';
+	const LIMITE_CADEIA = 50;
+
+	/**
 	 * Rótulos do comando "campos" em "status" e "desfazer".
 	 */
 	const ROTULO_CAMPOS_POSTS = 'ficha (posts com campos gravados)';
@@ -675,7 +682,7 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 				foreach ( $mapa as $lote_campos => $entrada ) {
 					$lote_campos = (string) $lote_campos;
 					$data        = ( is_array( $entrada ) && isset( $entrada['data'] ) ) ? (string) $entrada['data'] : '';
-					$qtd_campos  = ( is_array( $entrada ) && isset( $entrada['campos'] ) && is_array( $entrada['campos'] ) ) ? count( $entrada['campos'] ) : 0;
+					$qtd_campos  = $this->contar_itens_registro( $entrada );
 					foreach ( array( self::ROTULO_CAMPOS_POSTS => 1, self::ROTULO_CAMPOS => $qtd_campos ) as $rotulo => $incremento ) {
 						$chave = $lote_campos . '|' . $rotulo;
 						if ( ! isset( $grupos[ $chave ] ) ) {
@@ -862,8 +869,40 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 					}
 					$gravados = ( isset( $entrada['gravados'] ) && is_array( $entrada['gravados'] ) ) ? $entrada['gravados'] : array();
 					foreach ( array_keys( $entrada['campos'] ) as $campo ) {
-						$total_campos++;
+						$campo  = (string) $campo;
 						$rotulo = 'campos:' . $post_id . ' (' . $lote_campos . ')';
+						if ( self::CAMPO_PAI === $campo ) {
+							$total_campos++;
+							$esperado_pai = array_key_exists( $campo, $gravados ) ? (int) $gravados[ $campo ] : null;
+							$pai_agora    = $this->pai_atual( (int) $post_id );
+							if ( null === $esperado_pai ) {
+								$falhas_campos++;
+								$falhas[] = $this->falha( $rotulo, $campo, '', '', 'registro sem o valor gravado' );
+							} elseif ( $pai_agora !== $esperado_pai ) {
+								$falhas_campos++;
+								$falhas[] = $this->falha( $rotulo, $campo, (string) $esperado_pai, ( null === $pai_agora ) ? '' : (string) $pai_agora, 'pai diferente do gravado pelo lote' );
+							}
+							continue;
+						}
+						if ( 0 === strpos( $campo, self::PREFIXO_TAX ) ) {
+							$tax_v   = substr( $campo, strlen( self::PREFIXO_TAX ) );
+							$lista_v = ( array_key_exists( $campo, $gravados ) && is_array( $gravados[ $campo ] ) ) ? array_map( 'intval', $gravados[ $campo ] ) : null;
+							if ( null === $lista_v ) {
+								$total_campos++;
+								$falhas_campos++;
+								$falhas[] = $this->falha( $rotulo, $campo, '', '', 'registro sem a lista de termos gravada' );
+								continue;
+							}
+							foreach ( $lista_v as $term_v ) {
+								$total_campos++;
+								if ( ! taxonomy_exists( $tax_v ) || ! has_term( $term_v, $tax_v, (int) $post_id ) ) {
+									$falhas_campos++;
+									$falhas[] = $this->falha( $rotulo, $campo, (string) $term_v, '', 'termo não está mais no post' );
+								}
+							}
+							continue;
+						}
+						$total_campos++;
 						if ( ! array_key_exists( $campo, $gravados ) ) {
 							$falhas_campos++;
 							$falhas[] = $this->falha( $rotulo, $campo, '', '', 'registro sem o valor gravado' );
@@ -1533,6 +1572,14 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 	 * Linhas do mesmo id e campo com valores diferentes no arquivo são todas recusadas. Campo já
 	 * gravado por outro lote ainda não desfeito também é recusado.
 	 *
+	 * Duas pseudo-chaves (0.6.0) na coluna "campo": "post_parent" define o pai de um post de tipo
+	 * hierárquico (valor = ID de um post publicado do mesmo tipo; recusa o próprio post e
+	 * descendentes; grava direto em wp_posts, sem post_modified, revisão nem hooks; o relatório traz
+	 * o permalink antes e depois) e "tax:<taxonomia>" (ex.: tax:hbv_papel) acrescenta ao post um
+	 * termo existente (valor = slug; não cria termos; vários termos da mesma taxonomia no mesmo
+	 * post são válidos). Em tax:*, "preencher" e "sobrescrever" significam o mesmo: acrescentar.
+	 * O "desfazer" restaura o pai e remove só os termos acrescentados pelo lote.
+	 *
 	 * Para o "desfazer", cada post guarda o meta _hbv_migracao_campos (JSON por lote, com o valor
 	 * anterior de cada campo e o valor gravado), escrito antes de alterar o campo. Não altera
 	 * post_modified nem cria revisões. Relatório: uploads/hbv-migracao/<lote>.tsv.
@@ -1616,7 +1663,7 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 				foreach ( $bloco as $linha ) {
 					$r = $this->processar_campo( $linha, $posts, $divergentes, $lote, $simular );
 
-					$rotulo_campo = preg_match( '/^hbv_[a-z0-9_]+$/', $linha['campo'] ) ? $linha['campo'] : '(campo inválido)';
+					$rotulo_campo = $this->campo_valido( $linha['campo'] ) ? $linha['campo'] : '(campo inválido)';
 					$this->contar_campo( $estatisticas, $rotulo_campo, $r['resultado'] );
 
 					if ( 'recusado' === $r['resultado'] ) {
@@ -4103,8 +4150,8 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 
 			if ( ! ctype_digit( $l['id'] ) || (int) $l['id'] < 1 ) {
 				$l['erro'] = 'id inválido';
-			} elseif ( ! preg_match( '/^hbv_[a-z0-9_]+$/', $l['campo'] ) ) {
-				$l['erro'] = 'campo inválido (use a chave com prefixo hbv_)';
+			} elseif ( ! $this->campo_valido( $l['campo'] ) ) {
+				$l['erro'] = 'campo inválido (use a chave com prefixo hbv_, post_parent ou tax:<taxonomia>)';
 			} elseif ( ! in_array( $l['modo'], self::MODOS_CAMPOS, true ) ) {
 				$l['erro'] = 'modo inválido (use preencher ou sobrescrever)';
 			} elseif ( '' === $l['valor'] ) {
@@ -4134,7 +4181,7 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 			if ( '' !== $l['erro'] ) {
 				continue;
 			}
-			$chave = $l['id'] . '|' . $l['campo'];
+			$chave = $this->chave_par_campo( $l );
 			if ( ! isset( $valores[ $chave ] ) ) {
 				$valores[ $chave ] = $l['valor'];
 			} elseif ( $valores[ $chave ] !== $l['valor'] ) {
@@ -4197,7 +4244,7 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 	private function processar_campo( $linha, $posts, $divergentes, $lote, $simular ) {
 		$id    = (int) $linha['id'];
 		$campo = $linha['campo'];
-		$chave = $linha['id'] . '|' . $campo;
+		$chave = $this->chave_par_campo( $linha );
 
 		$recusa = function ( $motivo, $anterior = '' ) {
 			return array(
@@ -4260,6 +4307,17 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 		}
 		if ( 'publish' !== $posts[ $id ]['status'] ) {
 			return $resultado( 'recusado', 'post não publicado (' . $posts[ $id ]['status'] . ')', '' );
+		}
+
+		// Pseudo-chaves (0.6.0): pai do post e termo de taxonomia.
+		if ( self::CAMPO_PAI === $campo ) {
+			return $this->classificar_pai( $linha, $id, $tipo, $lote, $simular );
+		}
+		if ( 0 === strpos( $campo, self::PREFIXO_TAX ) ) {
+			return $this->classificar_termo( $linha, $id, $tipo, $lote, $simular );
+		}
+		if ( 0 !== strpos( $campo, 'hbv_' ) ) {
+			return $resultado( 'recusado', 'campo inválido', '' );
 		}
 
 		$defs = hbv_fields_for( $tipo );
@@ -4437,6 +4495,41 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 	 * @return string Erro (vazio se tudo certo).
 	 */
 	private function gravar_campo( $id, $campo, $novo, $anterior, $lote ) {
+		$bruto_antes = '';
+		$erro        = $this->registrar_campo( $id, $campo, $anterior, $novo, $lote, $bruto_antes );
+		if ( '' !== $erro ) {
+			return $erro;
+		}
+
+		update_post_meta( $id, $campo, wp_slash( $novo ) );
+		$lido = metadata_exists( 'post', $id, $campo ) ? get_post_meta( $id, $campo, true ) : null;
+		if ( ! is_scalar( $lido ) || (string) $lido !== $novo ) {
+			if ( null === $anterior ) {
+				delete_post_meta( $id, $campo );
+			} else {
+				update_post_meta( $id, $campo, wp_slash( $anterior ) );
+			}
+			$this->restaurar_registro_campos( $id, $bruto_antes );
+			return 'falha ao gravar ' . $campo;
+		}
+		return '';
+	}
+
+	/**
+	 * Escreve, no _hbv_migracao_campos do post, a entrada de um campo do lote (antes de alterar o campo).
+	 *
+	 * Serve às metas, ao post_parent e às taxonomias. Se o registro não pôde ser gravado, devolve o
+	 * meta ao que era e informa o erro.
+	 *
+	 * @param int    $id          ID do post.
+	 * @param string $campo       Chave (meta com prefixo, post_parent ou tax:<taxonomia>).
+	 * @param mixed  $anterior    Valor anterior (meta: texto ou null; post_parent: inteiro; tax: lista de term_ids acrescentados).
+	 * @param mixed  $gravado     Valor gravado (mesmo formato).
+	 * @param string $lote        Nome do lote.
+	 * @param string $bruto_antes Recebe o JSON anterior do meta ('' = não existia).
+	 * @return string Erro (vazio se tudo certo).
+	 */
+	private function registrar_campo( $id, $campo, $anterior, $gravado, $lote, &$bruto_antes ) {
 		$bruto_antes = get_post_meta( $id, self::META_CAMPOS, true );
 		$bruto_antes = is_string( $bruto_antes ) ? $bruto_antes : '';
 		$registro    = ( '' === $bruto_antes ) ? array() : json_decode( $bruto_antes, true );
@@ -4456,7 +4549,7 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 			$entrada['gravados'] = array();
 		}
 		$entrada['campos'][ $campo ]   = $anterior;
-		$entrada['gravados'][ $campo ] = $novo;
+		$entrada['gravados'][ $campo ] = $gravado;
 		$registro[ $lote ]             = $entrada;
 
 		$json = wp_json_encode( $registro );
@@ -4467,18 +4560,6 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 		if ( (string) get_post_meta( $id, self::META_CAMPOS, true ) !== $json ) {
 			$this->restaurar_registro_campos( $id, $bruto_antes );
 			return 'falha ao gravar o registro de desfazer';
-		}
-
-		update_post_meta( $id, $campo, wp_slash( $novo ) );
-		$lido = metadata_exists( 'post', $id, $campo ) ? get_post_meta( $id, $campo, true ) : null;
-		if ( ! is_scalar( $lido ) || (string) $lido !== $novo ) {
-			if ( null === $anterior ) {
-				delete_post_meta( $id, $campo );
-			} else {
-				update_post_meta( $id, $campo, wp_slash( $anterior ) );
-			}
-			$this->restaurar_registro_campos( $id, $bruto_antes );
-			return 'falha ao gravar ' . $campo;
 		}
 		return '';
 	}
@@ -4529,6 +4610,10 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 		$restaurados = 0;
 		foreach ( $entrada['campos'] as $campo => $anterior ) {
 			$campo = (string) $campo;
+			if ( self::CAMPO_PAI === $campo || 0 === strpos( $campo, self::PREFIXO_TAX ) ) {
+				$restaurados += $this->restaurar_pseudo_campo( $id, $campo, $anterior, $gravados, $simular, $avisos );
+				continue;
+			}
 			if ( ! preg_match( '/^hbv_[a-z0-9_]+$/', $campo ) ) {
 				continue;
 			}
@@ -4560,6 +4645,421 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 			}
 		}
 		return $restaurados;
+	}
+
+	/* ---------- Pseudo-chaves post_parent e tax:<taxonomia> (0.6.0) ---------- */
+
+	/**
+	 * Diz se a chave da coluna "campo" é aceita: meta com prefixo, post_parent ou tax:<taxonomia>.
+	 *
+	 * @param string $campo Chave.
+	 * @return bool
+	 */
+	private function campo_valido( $campo ) {
+		return (bool) preg_match( '/^(hbv_[a-z0-9_]+|post_parent|tax:[a-z0-9_-]+)$/', (string) $campo );
+	}
+
+	/**
+	 * Chave do par id+campo usada nas regras de duplicata.
+	 *
+	 * Em tax:<taxonomia> o valor entra na chave: várias linhas do mesmo post com termos diferentes
+	 * são válidas (cada termo é acrescentado), não duplicata conflitante.
+	 *
+	 * @param array $l Linha lida.
+	 * @return string
+	 */
+	private function chave_par_campo( $l ) {
+		$chave = $l['id'] . '|' . $l['campo'];
+		if ( 0 === strpos( $l['campo'], self::PREFIXO_TAX ) ) {
+			$chave .= '|' . $l['valor'];
+		}
+		return $chave;
+	}
+
+	/**
+	 * Pai atual de um post, lido direto do banco (sem cache). Null se o post não existe.
+	 *
+	 * @param int $id ID do post.
+	 * @return int|null
+	 */
+	private function pai_atual( $id ) {
+		global $wpdb;
+
+		$pai = $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT post_parent FROM {$wpdb->posts} WHERE ID = %d LIMIT 1",
+				$id
+			)
+		);
+		return ( null === $pai ) ? null : (int) $pai;
+	}
+
+	/**
+	 * Confere se trocar o pai de $id por $pai criaria um ciclo (sobe a cadeia de pais de $pai).
+	 *
+	 * @param int $id  Post que ganharia o pai.
+	 * @param int $pai Pai proposto.
+	 * @return string '' se não há ciclo; 'ciclo' ou 'limite' (cadeia maior que o limite de passos).
+	 */
+	private function ciclo_de_pais( $id, $pai ) {
+		$atual = $pai;
+		for ( $i = 0; $i < self::LIMITE_CADEIA; $i++ ) {
+			if ( $atual === $id ) {
+				return 'ciclo';
+			}
+			$acima = $this->pai_atual( $atual );
+			if ( ! $acima ) {
+				return '';
+			}
+			$atual = $acima;
+		}
+		return 'limite';
+	}
+
+	/**
+	 * Permalink de um post; com $pai_simulado, estima o permalink como se o post tivesse esse pai.
+	 *
+	 * @param int      $id          ID do post.
+	 * @param int|null $pai_simulado Pai a simular (null = o real).
+	 * @return string Permalink ('' se não foi possível obter).
+	 */
+	private function permalink_com_pai( $id, $pai_simulado = null ) {
+		$post = get_post( $id );
+		if ( ! $post ) {
+			return '';
+		}
+		if ( null !== $pai_simulado ) {
+			$post              = clone $post;
+			$post->post_parent = (int) $pai_simulado;
+		}
+		$link = get_permalink( $post );
+		return is_string( $link ) ? $link : '';
+	}
+
+	/**
+	 * Troca o pai de um post direto em wp_posts (sem post_modified, revisão nem hooks de save_post).
+	 *
+	 * @param int $id  ID do post.
+	 * @param int $pai Novo pai (0 = sem pai).
+	 * @return bool Se o banco ficou com o pai pedido.
+	 */
+	private function gravar_pai_direto( $id, $pai ) {
+		global $wpdb;
+
+		$res = $wpdb->update( $wpdb->posts, array( 'post_parent' => (int) $pai ), array( 'ID' => (int) $id ), array( '%d' ), array( '%d' ) );
+		clean_post_cache( $id );
+		return false !== $res && $this->pai_atual( $id ) === (int) $pai;
+	}
+
+	/**
+	 * Procura, no registro de lotes, uma entrada do campo em outro lote (ou no mesmo, para "já gravado").
+	 *
+	 * @param array  $registro Registro do post.
+	 * @param string $campo    Chave.
+	 * @return array|null array( 'lote' => string, 'entrada' => array ) ou null.
+	 */
+	private function entrada_do_campo( $registro, $campo ) {
+		foreach ( $registro as $outro => $entrada ) {
+			if ( is_array( $entrada ) && isset( $entrada['campos'] ) && is_array( $entrada['campos'] ) && array_key_exists( $campo, $entrada['campos'] ) ) {
+				return array(
+					'lote'    => (string) $outro,
+					'entrada' => $entrada,
+				);
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Classifica e grava a pseudo-chave post_parent.
+	 *
+	 * @param array  $linha   Linha lida.
+	 * @param int    $id      ID do post.
+	 * @param string $tipo    Tipo do post.
+	 * @param string $lote    Nome do lote.
+	 * @param bool   $simular Se é simulação.
+	 * @return array Como em processar_campo().
+	 */
+	private function classificar_pai( $linha, $id, $tipo, $lote, $simular ) {
+		global $wpdb;
+
+		$resultado = static function ( $res, $motivo, $anterior ) {
+			return array(
+				'resultado' => $res,
+				'motivo'    => $motivo,
+				'anterior'  => $anterior,
+			);
+		};
+
+		if ( ! is_post_type_hierarchical( $tipo ) ) {
+			return $resultado( 'recusado', 'o tipo ' . $tipo . ' não é hierárquico', '' );
+		}
+		if ( ! preg_match( '/^[0-9]{1,12}$/', $linha['valor'] ) || (int) $linha['valor'] < 1 ) {
+			return $resultado( 'recusado', 'valor não é um ID de post', '' );
+		}
+		$novo = (int) $linha['valor'];
+
+		$atual = $this->pai_atual( $id );
+		if ( null === $atual ) {
+			return $resultado( 'recusado', 'post inexistente', '' );
+		}
+		$mostra = (string) $atual;
+
+		if ( $novo === $id ) {
+			return $resultado( 'recusado', 'o post não pode ser pai de si mesmo', $mostra );
+		}
+		$alvo = $wpdb->get_row(
+			$wpdb->prepare(
+				"SELECT post_type, post_status FROM {$wpdb->posts} WHERE ID = %d LIMIT 1",
+				$novo
+			)
+		);
+		if ( ! $alvo || $alvo->post_type !== $tipo || 'publish' !== $alvo->post_status ) {
+			return $resultado( 'recusado', 'pai não é um post publicado do tipo ' . $tipo, $mostra );
+		}
+		$ciclo = $this->ciclo_de_pais( $id, $novo );
+		if ( 'ciclo' === $ciclo ) {
+			return $resultado( 'recusado', 'o pai proposto é descendente do post (ciclo)', $mostra );
+		}
+		if ( 'limite' === $ciclo ) {
+			return $resultado( 'recusado', 'cadeia de pais com mais de ' . self::LIMITE_CADEIA . ' níveis', $mostra );
+		}
+
+		$registro = $this->ler_registro_campos( $id );
+		if ( null === $registro ) {
+			return $resultado( 'recusado', 'registro ' . self::META_CAMPOS . ' ilegível', $mostra );
+		}
+		$achado = $this->entrada_do_campo( $registro, self::CAMPO_PAI );
+		if ( $achado ) {
+			$entrada = $achado['entrada'];
+			if ( $achado['lote'] === $lote
+				&& isset( $entrada['gravados'] ) && is_array( $entrada['gravados'] )
+				&& array_key_exists( self::CAMPO_PAI, $entrada['gravados'] ) && (int) $entrada['gravados'][ self::CAMPO_PAI ] === $novo
+				&& $atual === $novo ) {
+				return $resultado( 'ja_igual', 'já gravado por este lote', $mostra );
+			}
+			return $resultado( 'recusado', 'campo gravado pelo lote ' . $achado['lote'], $mostra );
+		}
+
+		if ( 0 === $atual ) {
+			$res = 'gravado';
+		} elseif ( $atual === $novo ) {
+			return $resultado( 'ja_igual', '', $mostra );
+		} elseif ( 'preencher' === $linha['modo'] ) {
+			return $resultado( 'conflito', 'o post já tem outro pai', $mostra );
+		} else {
+			$res = 'sobrescrito';
+		}
+
+		$antes = $this->permalink_com_pai( $id );
+		if ( $simular ) {
+			$depois = $this->permalink_com_pai( $id, $novo );
+			$nota   = 'permalink (estimado): ' . $antes . ' -> ' . $depois;
+		} else {
+			$bruto_antes = '';
+			$erro        = $this->registrar_campo( $id, self::CAMPO_PAI, $atual, $novo, $lote, $bruto_antes );
+			if ( '' !== $erro ) {
+				return $resultado( 'recusado', $erro, $mostra );
+			}
+			if ( ! $this->gravar_pai_direto( $id, $novo ) ) {
+				$this->gravar_pai_direto( $id, $atual );
+				$this->restaurar_registro_campos( $id, $bruto_antes );
+				return $resultado( 'recusado', 'falha ao gravar o pai', $mostra );
+			}
+			$nota = 'permalink: ' . $antes . ' -> ' . $this->permalink_com_pai( $id );
+		}
+
+		return $resultado( $res, $nota, $mostra );
+	}
+
+	/**
+	 * Classifica e grava a pseudo-chave tax:<taxonomia> (acrescenta um termo existente ao post).
+	 *
+	 * @param array  $linha   Linha lida.
+	 * @param int    $id      ID do post.
+	 * @param string $tipo    Tipo do post.
+	 * @param string $lote    Nome do lote.
+	 * @param bool   $simular Se é simulação.
+	 * @return array Como em processar_campo().
+	 */
+	private function classificar_termo( $linha, $id, $tipo, $lote, $simular ) {
+		$resultado = static function ( $res, $motivo, $anterior ) {
+			return array(
+				'resultado' => $res,
+				'motivo'    => $motivo,
+				'anterior'  => $anterior,
+			);
+		};
+
+		$campo = $linha['campo'];
+		$tax   = substr( $campo, strlen( self::PREFIXO_TAX ) );
+		if ( ! taxonomy_exists( $tax ) ) {
+			return $resultado( 'recusado', 'taxonomia ' . $tax . ' não registrada', '' );
+		}
+		if ( ! is_object_in_taxonomy( $tipo, $tax ) ) {
+			return $resultado( 'recusado', 'a taxonomia ' . $tax . ' não é usada pelo tipo ' . $tipo, '' );
+		}
+		$termo = get_term_by( 'slug', $linha['valor'], $tax );
+		if ( ! $termo || is_wp_error( $termo ) ) {
+			return $resultado( 'recusado', 'termo inexistente em ' . $tax . ' (o comando não cria termos)', '' );
+		}
+		$term_id = (int) $termo->term_id;
+
+		$registro = $this->ler_registro_campos( $id );
+		if ( null === $registro ) {
+			return $resultado( 'recusado', 'registro ' . self::META_CAMPOS . ' ilegível', '' );
+		}
+		// Termo acrescentado por outro lote ainda não desfeito: o desfazer dele o removeria.
+		foreach ( $registro as $outro => $entrada ) {
+			if ( (string) $outro === $lote || ! is_array( $entrada ) || ! isset( $entrada['campos'][ $campo ] ) || ! is_array( $entrada['campos'][ $campo ] ) ) {
+				continue;
+			}
+			if ( in_array( $term_id, array_map( 'intval', $entrada['campos'][ $campo ] ), true ) ) {
+				return $resultado( 'recusado', 'termo acrescentado pelo lote ' . $outro, '' );
+			}
+		}
+
+		$anterior = implode( ',', array_map( 'intval', (array) wp_get_object_terms( $id, $tax, array( 'fields' => 'ids' ) ) ) );
+
+		if ( has_term( $term_id, $tax, $id ) ) {
+			$ja_lote = isset( $registro[ $lote ]['campos'][ $campo ] ) && is_array( $registro[ $lote ]['campos'][ $campo ] )
+				&& in_array( $term_id, array_map( 'intval', $registro[ $lote ]['campos'][ $campo ] ), true );
+			return $resultado( 'ja_igual', $ja_lote ? 'já gravado por este lote' : '', $anterior );
+		}
+
+		if ( ! $simular ) {
+			$falha = $this->gravar_termo( $id, $campo, $tax, $term_id, $registro, $lote );
+			if ( '' !== $falha ) {
+				return $resultado( 'recusado', $falha, $anterior );
+			}
+		}
+
+		return $resultado( 'gravado', '', $anterior );
+	}
+
+	/**
+	 * Acrescenta um termo ao post, com o registro de desfazer escrito antes.
+	 *
+	 * O registro do lote guarda, em campos[tax:<taxonomia>] e em gravados[tax:<taxonomia>], a lista de
+	 * term_ids acrescentados pelo lote. Se algo falhar, o termo e o registro voltam ao que eram.
+	 *
+	 * @param int    $id       ID do post.
+	 * @param string $campo    Chave tax:<taxonomia>.
+	 * @param string $tax      Taxonomia.
+	 * @param int    $term_id  Termo a acrescentar.
+	 * @param array  $registro Registro atual do post (ler_registro_campos()).
+	 * @param string $lote     Nome do lote.
+	 * @return string Erro (vazio se tudo certo).
+	 */
+	private function gravar_termo( $id, $campo, $tax, $term_id, $registro, $lote ) {
+		$lista = array();
+		if ( isset( $registro[ $lote ]['campos'][ $campo ] ) && is_array( $registro[ $lote ]['campos'][ $campo ] ) ) {
+			$lista = array_map( 'intval', $registro[ $lote ]['campos'][ $campo ] );
+		}
+		$lista[] = $term_id;
+		$lista   = array_values( array_unique( $lista ) );
+
+		$bruto_antes = '';
+		$erro        = $this->registrar_campo( $id, $campo, $lista, $lista, $lote, $bruto_antes );
+		if ( '' !== $erro ) {
+			return $erro;
+		}
+
+		$res = wp_set_object_terms( $id, $term_id, $tax, true );
+		if ( is_wp_error( $res ) || ! has_term( $term_id, $tax, $id ) ) {
+			wp_remove_object_terms( $id, $term_id, $tax );
+			$this->recontar_termo( $term_id, $tax );
+			$this->restaurar_registro_campos( $id, $bruto_antes );
+			return 'falha ao acrescentar o termo em ' . $tax;
+		}
+		return '';
+	}
+
+	/**
+	 * Recalcula a contagem de um termo (term_taxonomy.count) na hora, sem esperar o fim do processo.
+	 *
+	 * @param int    $term_id  Termo.
+	 * @param string $taxonomia Taxonomia.
+	 */
+	private function recontar_termo( $term_id, $taxonomia ) {
+		$termo = get_term( (int) $term_id, $taxonomia );
+		if ( $termo && ! is_wp_error( $termo ) ) {
+			wp_update_term_count_now( array( (int) $termo->term_taxonomy_id ), $taxonomia );
+		}
+	}
+
+	/**
+	 * Restaura um item do registro (post_parent ou tax:<taxonomia>) de um lote.
+	 *
+	 * @param int    $id       ID do post.
+	 * @param string $campo    post_parent ou tax:<taxonomia>.
+	 * @param mixed  $anterior Valor anterior do registro (pai ou lista de term_ids).
+	 * @param array  $gravados Valores gravados do lote.
+	 * @param bool   $simular  Se é simulação.
+	 * @param array  $avisos   Recebe os avisos.
+	 * @return int Itens restaurados (ou que seriam).
+	 */
+	private function restaurar_pseudo_campo( $id, $campo, $anterior, $gravados, $simular, &$avisos ) {
+		if ( self::CAMPO_PAI === $campo ) {
+			$atual = $this->pai_atual( $id );
+			if ( null === $atual ) {
+				$avisos[] = 'post não existe mais; pai não restaurado.';
+				return 0;
+			}
+			if ( array_key_exists( $campo, $gravados ) && (int) $gravados[ $campo ] !== $atual ) {
+				$avisos[] = 'post_parent foi alterado depois do lote (atual "' . $atual . '", gravado "' . (int) $gravados[ $campo ] . '"); não restaurado.';
+				return 0;
+			}
+			if ( ! $simular && ! $this->gravar_pai_direto( $id, (int) $anterior ) ) {
+				$avisos[] = 'falha ao restaurar post_parent.';
+				return 0;
+			}
+			return 1;
+		}
+
+		$tax = substr( $campo, strlen( self::PREFIXO_TAX ) );
+		if ( ! is_array( $anterior ) ) {
+			$avisos[] = $campo . ': registro sem a lista de termos; não restaurado.';
+			return 0;
+		}
+		if ( ! taxonomy_exists( $tax ) ) {
+			$avisos[] = 'taxonomia ' . $tax . ' não está mais registrada; termos não removidos.';
+			return 0;
+		}
+
+		$removidos = 0;
+		foreach ( array_values( array_unique( array_map( 'intval', $anterior ) ) ) as $term_id ) {
+			if ( ! has_term( $term_id, $tax, $id ) ) {
+				continue;
+			}
+			if ( ! $simular ) {
+				$res = wp_remove_object_terms( $id, $term_id, $tax );
+				if ( true !== $res ) {
+					$avisos[] = 'falha ao remover o termo ' . $term_id . ' de ' . $tax . '.';
+					continue;
+				}
+				$this->recontar_termo( $term_id, $tax );
+			}
+			$removidos++;
+		}
+		return $removidos;
+	}
+
+	/**
+	 * Conta os itens gravados por um lote em um post: um por campo e por pai; um por termo em tax:*.
+	 *
+	 * @param mixed $entrada Entrada do lote no _hbv_migracao_campos.
+	 * @return int
+	 */
+	private function contar_itens_registro( $entrada ) {
+		if ( ! is_array( $entrada ) || ! isset( $entrada['campos'] ) || ! is_array( $entrada['campos'] ) ) {
+			return 0;
+		}
+		$qtd = 0;
+		foreach ( $entrada['campos'] as $campo => $valor ) {
+			$qtd += ( 0 === strpos( (string) $campo, self::PREFIXO_TAX ) && is_array( $valor ) ) ? count( $valor ) : 1;
+		}
+		return $qtd;
 	}
 
 	/**

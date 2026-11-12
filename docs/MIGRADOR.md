@@ -468,12 +468,78 @@ wp hbv migracao desfazer --lote=datas-1
 Atenção: o `desfazer` do `meses` e o do `campos` são independentes. Se os dois gravaram o mesmo campo da
 mesma pessoa (por exemplo `hbv_nascimento_dia`), desfaça primeiro o lote gravado por último.
 
+### Pai do post e termos de taxonomia (0.6.0)
+
+Além das metas, a coluna `campo` aceita duas pseudo-chaves. Tudo o que vale para as metas (cabeçalho,
+`--simular`, relatório, blocos de 200, recusas sem interromper o lote) continua valendo.
+
+**`post_parent`**: define o pai de um post de tipo hierárquico (na prática `hbv_lugar`: localidade
+dentro do distrito).
+
+| Regra | Detalhe |
+|---|---|
+| Tipo | O tipo do post tem de ser hierárquico; senão, recusa. |
+| `valor` | ID de um post **publicado do mesmo tipo**. Não pode ser o próprio post nem um descendente dele: o comando sobe a cadeia de pais do valor (no máximo 50 passos) e recusa se encontrar o post (ciclo) ou se a cadeia passar do limite. `0` (remover o pai) não é aceito. |
+| `preencher` | Grava só se o pai atual é 0; mesmo pai: "já igual"; outro pai: conflito (não grava). |
+| `sobrescrever` | Grava. |
+
+A gravação é `$wpdb->update` direto em `wp_posts.post_parent` seguido de `clean_post_cache()`: não muda
+`post_modified`, não cria revisão e não dispara hooks de `save_post`. O registro fica no mesmo
+`_hbv_migracao_campos`, com a chave `post_parent` (valor anterior em `campos`, inteiro, e o gravado em
+`gravados`): `{"<lote>":{"data":"…","campos":{"post_parent":0},"gravados":{"post_parent":456}}}`.
+
+**Permalink.** Num tipo com rewrite hierárquico, mudar o pai muda a URL (`/lugares/distrito/localidade/`
+em vez de `/lugares/localidade/`). Na coluna `motivo` do relatório, as linhas gravadas e sobrescritas
+trazem `permalink: <anterior> -> <novo>` (na simulação, `permalink (estimado): ...`, calculado como se o
+post já tivesse o pai). Os endereços antigos dos posts convertidos (`_hbv_caminho_antigo`) já foram
+gravados pelo conversor e **não** são alterados: o resolvedor de redirecionamentos usa `get_permalink()`,
+então o endereço antigo passa a redirecionar para a URL nova. O `verificar` dos lotes de conversão
+continua válido depois de mudar pais. O endereço intermediário (a URL que o lugar tinha entre a conversão
+e a mudança de pai) não ganha redirecionamento próprio.
+
+**`tax:<taxonomia>`** (ex.: `tax:hbv_papel`): **acrescenta** um termo ao post.
+
+| Regra | Detalhe |
+|---|---|
+| Taxonomia | Tem de estar registrada e ser usada pelo tipo do post. |
+| `valor` | Slug de um termo **existente** da taxonomia. O comando não cria termos: slug inexistente é recusado. |
+| Modo | `preencher` e `sobrescrever` significam o mesmo: acrescentar. Se o post já tem o termo: "já igual" (e o termo não entra no registro, então o `desfazer` não o remove). |
+| Várias linhas | Várias linhas do mesmo post com termos diferentes da mesma taxonomia são válidas. Só a mesma linha repetida conta uma vez ("já igual"). Termo já acrescentado por outro lote ainda não desfeito é recusado. |
+
+Usa `wp_set_object_terms( $id, $term_id, $tax, true )`. O registro guarda, em `tax:<taxonomia>`, a lista
+de `term_id` acrescentados **pelo lote** (em `campos` e em `gravados`):
+`{"<lote>":{"campos":{"tax:hbv_papel":[12,15]},"gravados":{"tax:hbv_papel":[12,15]}}}`.
+
+Exemplo (`lugares-papeis.tsv`; o termo é o slug, o pai é um ID):
+
+```
+id	campo	valor	modo	fonte
+301	post_parent	120	preencher	localidade de Boa Viagem, 2º Momento
+1234	tax:hbv_papel	prefeito	preencher	biografia, 3º Momento
+1234	tax:hbv_papel	escritor	preencher	biografia, 3º Momento
+```
+
+**Desfazer, verificar e status.**
+
+- `desfazer`: `post_parent` volta ao valor anterior, pelo mesmo caminho da gravação, só se o pai atual
+  ainda é o gravado (senão, aviso e não restaura). Em `tax:*`, remove com `wp_remove_object_terms` só os
+  termos acrescentados pelo lote que ainda estão no post e reconta cada um (`wp_update_term_count_now`).
+  A entrada do lote sai do registro e o meta some quando fica vazio. Se a taxonomia deixou de estar
+  registrada, avisa e não remove.
+- `verificar`: confere que o pai é o gravado e que cada termo acrescentado ainda está no post.
+- `status`: `ficha (campos gravados)` conta 1 por meta, 1 por `post_parent` e 1 por termo acrescentado.
+
+Para o teste de `CHECKSUM TABLE` (`wp_posts`, `wp_postmeta`, `wp_term_relationships`,
+`wp_term_taxonomy`) depois do `desfazer`: se `term_taxonomy.count` de algum termo já estava
+desatualizado antes do lote, a recontagem o corrige (na gravação e no desfazer) e o checksum de
+`wp_term_taxonomy` difere por isso; recalcule as contagens antes de medir.
+
 ## Fora desta versão (próximos PRs)
 
 - Filtro `hbv_mes` na listagem de `hbv_fato` e as listas "Nasceram/Morreram neste mês" geradas dos
   campos de data das biografias (a migração já grava os dados; falta a exibição).
 - Extração dos valores dos campos da ficha (nascimento, falecimento, local, papel; tipo e lei do
-  logradouro; distrito da localidade). A gravação existe (`campos`); falta gerar os TSV. Regras
+  logradouro; distrito da localidade). A gravação existe (`campos`, incluindo `post_parent` e `tax:*`); falta gerar os TSV. Regras
   primeiro; casos fora do padrão por modelo pequeno, com validação.
 - Reescrever links internos antigos dentro dos textos.
 
