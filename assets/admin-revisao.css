@@ -115,3 +115,12 @@
 		grid-template-columns: 1fr;
 	}
 }
+
+.hbv-revisao-bloco {
+	margin-bottom: 20px;
+}
+
+.hbv-revisao-tabela {
+	max-width: 60em;
+	margin-bottom: 16px;
+}

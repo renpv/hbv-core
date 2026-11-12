@@ -221,7 +221,8 @@ add_action( 'admin_menu', 'hbv_revisao_menu' );
  * @param string $hook Sufixo da tela atual.
  */
 function hbv_revisao_estilos( $hook ) {
-	if ( 'toplevel_page_hbv-revisao' !== $hook ) {
+	// Tela principal (toplevel_page_hbv-revisao) e subpágina "Importar e exportar".
+	if ( false === strpos( (string) $hook, 'hbv-revisao' ) ) {
 		return;
 	}
 	wp_enqueue_style( 'hbv-revisao', plugins_url( 'assets/admin-revisao.css', HBV_CORE_FILE ), array(), HBV_CORE_VERSION );
@@ -692,3 +693,5 @@ function hbv_revisao_decidir_post() {
 	exit;
 }
 add_action( 'admin_post_hbv_revisao_decidir', 'hbv_revisao_decidir_post' );
+
+require_once __DIR__ . '/admin-transferencia.php';
