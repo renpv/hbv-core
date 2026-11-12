@@ -784,6 +784,12 @@ trait HBV_Migracao_Links {
 		$url = null;
 		if ( 'attachment' === get_post_type( $id ) ) {
 			$permalink = get_permalink( $id );
+			// Anexo cujo pai não está publicado (ex.: página de bibliografia dividida, agora rascunho):
+			// o permalink vira ?attachment_id=N; aponta para o próprio arquivo.
+			if ( is_string( $permalink ) && false !== strpos( $permalink, 'attachment_id=' ) ) {
+				$arquivo   = wp_get_attachment_url( $id );
+				$permalink = ( is_string( $arquivo ) && '' !== $arquivo ) ? $arquivo : $permalink;
+			}
 			if ( is_string( $permalink ) && '' !== $permalink ) {
 				$url = $permalink;
 			}
@@ -924,7 +930,7 @@ trait HBV_Migracao_Links {
 				$ids = $filtrados;
 			}
 			if ( 1 === count( $ids ) ) {
-				$url = get_permalink( $ids[0] );
+				$url = $this->links_destino_anexo( $ids[0] );
 				if ( is_string( $url ) && '' !== $url ) {
 					return $res( 'g', $url, '' );
 				}
