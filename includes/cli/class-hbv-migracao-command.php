@@ -1,6 +1,6 @@
 <?php
 /**
- * Comandos WP-CLI do migrador: wp hbv migracao <converter|desfazer|status|verificar|obras|titulos|meses>.
+ * Comandos WP-CLI do migrador: wp hbv migracao <converter|desfazer|status|verificar|obras|titulos|meses|campos>.
  *
  * Ver docs/MIGRADOR.md. Este arquivo só é carregado quando WP_CLI está ativo.
  *
@@ -24,6 +24,8 @@ if ( ! defined( 'ABSPATH' ) ) {
  * Desde a 0.4.0: "meses" divide as 12 páginas de mês em fatos (hbv_fato), datas de
  * nascimento e falecimento nas biografias, texto do mês (option hbv_meses) e um
  * redirecionamento por caminho fixo.
+ * Desde a 0.5.0: "campos" grava campos da ficha (post meta) em qualquer tipo do plugin, a partir
+ * de um TSV (id, campo, valor, modo, fonte), com registro por lote para o desfazer.
  */
 class HBV_Migracao_Command extends WP_CLI_Command {
 
@@ -35,6 +37,22 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 	const OPCAO_CAMINHOS = 'hbv_core_caminhos_fixos';
 	const BLOCO         = 100;
 	const EXEMPLOS      = 5;
+
+	/**
+	 * Comando "campos" (0.5.0): registro de desfazer, tamanho do bloco e colunas.
+	 */
+	const META_CAMPOS      = '_hbv_migracao_campos';
+	const BLOCO_CAMPOS     = 200;
+	const ENTRADA_CAMPOS   = array( 'id', 'campo', 'valor', 'modo', 'fonte' );
+	const CABECALHO_CAMPOS = array( 'id', 'campo', 'valor', 'modo', 'fonte', 'valor_anterior', 'resultado', 'motivo' );
+	const MODOS_CAMPOS     = array( 'preencher', 'sobrescrever' );
+
+	/**
+	 * Rótulos do comando "campos" em "status" e "desfazer".
+	 */
+	const ROTULO_CAMPOS_POSTS = 'ficha (posts com campos gravados)';
+	const ROTULO_CAMPOS       = 'ficha (campos gravados)';
+	const ROTULO_CAMPOS_REST  = 'ficha (campos restaurados)';
 
 	/**
 	 * Colunas do plano.tsv, exatamente nesta ordem.
@@ -146,6 +164,14 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 	 * @var array
 	 */
 	private $datas_vistas = array();
+
+	/**
+	 * Resultado do primeiro "id|campo" já processado nesta execução do comando "campos"
+	 * (linhas repetidas com o mesmo valor).
+	 *
+	 * @var array
+	 */
+	private $campos_vistos = array();
 
 	/**
 	 * Converte posts para os tipos do HBV Core conforme um plano TSV.
@@ -351,6 +377,11 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 	 * e o caminho de hbv_core_caminhos_fixos (apagando as options que ficam vazias) e
 	 * devolve a página do mês ao status anterior.
 	 *
+	 * Para o lote do comando "campos": restaura cada campo da ficha ao valor anterior (apaga o
+	 * meta quando não existia) e remove o registro do lote (apagando o meta quando fica vazio).
+	 * Campo cujo valor atual não é o que o lote gravou (alguém editou depois) não é restaurado:
+	 * o comando avisa e segue.
+	 *
 	 * ## OPTIONS
 	 *
 	 * [--lote=<nome>]
@@ -460,6 +491,33 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 				$this->limpar_memoria();
 			}
 
+			// Campos da ficha (comando "campos").
+			foreach ( $this->registros_campos( $filtro ) as $bloco ) {
+				foreach ( $bloco as $post_id => $mapa ) {
+					if ( null === $mapa ) {
+						$invalidos++;
+						WP_CLI::warning( 'Registro ' . self::META_CAMPOS . ' ilegível no post ' . $post_id . '; ignorado.' );
+						continue;
+					}
+					foreach ( array_keys( $mapa ) as $lote_campos ) {
+						$lote_campos = (string) $lote_campos;
+						if ( '' !== $filtro && $lote_campos !== $filtro ) {
+							continue;
+						}
+						$avisos_campos = array();
+						$restaurados   = $this->restaurar_campos_post( $post_id, $lote_campos, $simular, $avisos_campos );
+						if ( $restaurados ) {
+							$revertidos[ self::ROTULO_CAMPOS_REST ] = ( isset( $revertidos[ self::ROTULO_CAMPOS_REST ] ) ? $revertidos[ self::ROTULO_CAMPOS_REST ] : 0 ) + $restaurados;
+						}
+						foreach ( $avisos_campos as $aviso ) {
+							$avisos++;
+							WP_CLI::warning( 'Post ' . $post_id . ' (lote ' . $lote_campos . '): ' . $aviso );
+						}
+					}
+				}
+				$this->limpar_memoria();
+			}
+
 			foreach ( $this->registros_termos( $filtro ) as $bloco ) {
 				foreach ( $bloco as $term_id => $dados ) {
 					if ( null === $dados ) {
@@ -514,7 +572,7 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 			WP_CLI::warning( $avisos . ' item(ns) com aviso (veja acima).' );
 		}
 
-		WP_CLI::success( ( $simular ? 'Simulação: seriam desfeitos ' : 'Desfeitos: ' ) . array_sum( $revertidos ) . ' item(ns) (posts, obras, fatos, datas, páginas e termos).' );
+		WP_CLI::success( ( $simular ? 'Simulação: seriam desfeitos ' : 'Desfeitos: ' ) . array_sum( $revertidos ) . ' item(ns) (posts, obras, fatos, datas, campos, páginas e termos).' );
 	}
 
 	/**
@@ -522,7 +580,8 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 	 *
 	 * Além das conversões de tipo, conta por lote as obras criadas, as páginas
 	 * divididas e os termos de autoria criados pelo comando "obras", e os fatos
-	 * criados, os meses divididos e as biografias com datas gravadas pelo "meses".
+	 * criados, os meses divididos e as biografias com datas gravadas pelo "meses", e os
+	 * posts e os campos da ficha gravados pelo "campos".
 	 *
 	 * ## EXAMPLES
 	 *
@@ -608,6 +667,35 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 			$this->limpar_memoria();
 		}
 
+		foreach ( $this->registros_campos( '' ) as $bloco ) {
+			foreach ( $bloco as $mapa ) {
+				if ( null === $mapa ) {
+					continue;
+				}
+				foreach ( $mapa as $lote_campos => $entrada ) {
+					$lote_campos = (string) $lote_campos;
+					$data        = ( is_array( $entrada ) && isset( $entrada['data'] ) ) ? (string) $entrada['data'] : '';
+					$qtd_campos  = ( is_array( $entrada ) && isset( $entrada['campos'] ) && is_array( $entrada['campos'] ) ) ? count( $entrada['campos'] ) : 0;
+					foreach ( array( self::ROTULO_CAMPOS_POSTS => 1, self::ROTULO_CAMPOS => $qtd_campos ) as $rotulo => $incremento ) {
+						$chave = $lote_campos . '|' . $rotulo;
+						if ( ! isset( $grupos[ $chave ] ) ) {
+							$grupos[ $chave ] = array(
+								'lote'       => $lote_campos,
+								'data'       => $data,
+								'tipo_novo'  => $rotulo,
+								'quantidade' => 0,
+							);
+						}
+						$grupos[ $chave ]['quantidade'] += $incremento;
+						if ( '' !== $data && ( '' === $grupos[ $chave ]['data'] || $data < $grupos[ $chave ]['data'] ) ) {
+							$grupos[ $chave ]['data'] = $data;
+						}
+					}
+				}
+			}
+			$this->limpar_memoria();
+		}
+
 		if ( $grupos ) {
 			ksort( $grupos );
 			\WP_CLI\Utils\format_items( 'table', array_values( $grupos ), array( 'lote', 'data', 'tipo_novo', 'quantidade' ) );
@@ -633,7 +721,9 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 	 * _hbv_caminho_antigo de termo de autoria (páginas divididas pelo comando
 	 * "obras"): deve resolver para o link do termo. Confere também o caminho fixo de cada
 	 * página de mês dividida pelo comando "meses": deve resolver para o destino registrado
-	 * (home_url + /datas-e-fatos/?hbv_mes=N). Termina com erro se houver falha.
+	 * (home_url + /datas-e-fatos/?hbv_mes=N). Confere também, para cada lote do comando "campos",
+	 * que cada campo gravado ainda tem o valor gravado (na lista de falhas, a coluna
+	 * caminho_antigo traz o nome do campo). Termina com erro se houver falha.
 	 *
 	 * ## OPTIONS
 	 *
@@ -671,8 +761,10 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 			WP_CLI::error( 'Valor inválido em --formato (use table ou csv).' );
 		}
 
-		$total  = 0;
-		$falhas = array();
+		$total         = 0;
+		$falhas        = array();
+		$total_campos  = 0;
+		$falhas_campos = 0;
 
 		// Caminhos de termo permitidos quando há --lote: os das páginas divididas do lote.
 		$caminhos_do_lote = array();
@@ -751,7 +843,45 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 			}
 		}
 
-		if ( 0 === $total ) {
+		// Campos da ficha gravados pelo comando "campos".
+		$falhas_redirecionamento = count( $falhas );
+		foreach ( $this->registros_campos( $lote ) as $bloco ) {
+			foreach ( $bloco as $post_id => $mapa ) {
+				if ( null === $mapa ) {
+					$total_campos++;
+					$falhas_campos++;
+					$falhas[] = $this->falha( 'campos:' . $post_id, self::META_CAMPOS, '', '', 'registro ilegível' );
+					continue;
+				}
+				foreach ( $mapa as $lote_campos => $entrada ) {
+					if ( ! is_array( $entrada ) || ! isset( $entrada['campos'] ) || ! is_array( $entrada['campos'] ) ) {
+						$total_campos++;
+						$falhas_campos++;
+						$falhas[] = $this->falha( 'campos:' . $post_id . ' (' . $lote_campos . ')', self::META_CAMPOS, '', '', 'entrada do lote ilegível' );
+						continue;
+					}
+					$gravados = ( isset( $entrada['gravados'] ) && is_array( $entrada['gravados'] ) ) ? $entrada['gravados'] : array();
+					foreach ( array_keys( $entrada['campos'] ) as $campo ) {
+						$total_campos++;
+						$rotulo = 'campos:' . $post_id . ' (' . $lote_campos . ')';
+						if ( ! array_key_exists( $campo, $gravados ) ) {
+							$falhas_campos++;
+							$falhas[] = $this->falha( $rotulo, $campo, '', '', 'registro sem o valor gravado' );
+							continue;
+						}
+						$esperado = (string) $gravados[ $campo ];
+						$atual    = metadata_exists( 'post', $post_id, $campo ) ? get_post_meta( $post_id, $campo, true ) : null;
+						if ( null === $atual || ! is_scalar( $atual ) || (string) $atual !== $esperado ) {
+							$falhas_campos++;
+							$falhas[] = $this->falha( $rotulo, $campo, $esperado, ( null === $atual || ! is_scalar( $atual ) ) ? '' : (string) $atual, 'valor diferente do gravado pelo lote' );
+						}
+					}
+				}
+			}
+			$this->limpar_memoria();
+		}
+
+		if ( 0 === $total && 0 === $total_campos ) {
 			WP_CLI::warning( 'Nenhum post convertido' . ( '' !== $lote ? ' no lote "' . $lote . '"' : '' ) . '.' );
 			return;
 		}
@@ -760,7 +890,14 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 			\WP_CLI\Utils\format_items( $formato, $falhas, array( 'id', 'caminho_antigo', 'esperado', 'obtido', 'motivo' ) );
 		}
 
-		$resumo = ( $total - count( $falhas ) ) . ' de ' . $total . ' resolvem';
+		$partes = array();
+		if ( $total ) {
+			$partes[] = ( $total - $falhas_redirecionamento ) . ' de ' . $total . ' resolvem';
+		}
+		if ( $total_campos ) {
+			$partes[] = ( $total_campos - $falhas_campos ) . ' de ' . $total_campos . ' campos conferem';
+		}
+		$resumo = implode( '; ', $partes );
 		if ( $falhas ) {
 			WP_CLI::error( $resumo . '; ' . count( $falhas ) . ' falha(s).' );
 		}
@@ -1377,6 +1514,144 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 		}
 
 		WP_CLI::success( $simular ? 'Simulação concluída: nada foi gravado.' : 'Títulos aplicados: ' . $c['aplicados'] . '.' );
+	}
+
+	/**
+	 * Grava campos da ficha (post meta) em qualquer tipo do plugin.
+	 *
+	 * Lê um TSV com o cabeçalho exato "id<TAB>campo<TAB>valor<TAB>modo<TAB>fonte". Cada linha
+	 * grava um campo (chave com prefixo, ex.: hbv_nascimento_dia) em um post publicado de um
+	 * tipo hbv_*. O campo tem de existir na ficha do tipo daquele post (o campo "fontes" não é
+	 * aceito) e o valor é validado e sanitizado conforme o tipo do campo: number (inteiro dentro
+	 * de min e max), select (uma das opções; mês de 1 a 12), text, textarea, url e post (ID de um
+	 * post existente do tipo do campo). Valor vazio é recusado.
+	 *
+	 * Modos: "preencher" grava só se o campo estiver vazio (valor igual conta como "já igual";
+	 * valor diferente é "conflito": não grava e vai para o relatório); "sobrescrever" grava mesmo
+	 * com valor diferente. A coluna "fonte" é texto livre e só vai para o relatório.
+	 *
+	 * Linhas do mesmo id e campo com valores diferentes no arquivo são todas recusadas. Campo já
+	 * gravado por outro lote ainda não desfeito também é recusado.
+	 *
+	 * Para o "desfazer", cada post guarda o meta _hbv_migracao_campos (JSON por lote, com o valor
+	 * anterior de cada campo e o valor gravado), escrito antes de alterar o campo. Não altera
+	 * post_modified nem cria revisões. Relatório: uploads/hbv-migracao/<lote>.tsv.
+	 *
+	 * ## OPTIONS
+	 *
+	 * <arquivo>
+	 * : Caminho do TSV (id, campo, valor, modo, fonte).
+	 *
+	 * [--simular]
+	 * : Não grava nada (nem relatório): mostra, por campo, quantos seriam gravados, já iguais,
+	 * conflitos, sobrescritas e recusadas, e 5 exemplos de conflito.
+	 *
+	 * [--lote=<nome>]
+	 * : Nome do lote, só com a-z, 0-9 e hífen. Padrão: AAAAMMDD-HHMMSS (UTC).
+	 *
+	 * ## EXAMPLES
+	 *
+	 *     # Ver o que mudaria, sem gravar
+	 *     wp hbv migracao campos datas-pessoas.tsv --simular
+	 *
+	 *     # Gravar
+	 *     wp hbv migracao campos datas-pessoas.tsv --lote=datas-1
+	 *
+	 *     # Voltar
+	 *     wp hbv migracao desfazer --lote=datas-1
+	 *
+	 * @when after_wp_load
+	 *
+	 * @param array $args       Argumentos posicionais.
+	 * @param array $assoc_args Argumentos nomeados.
+	 */
+	public function campos( $args, $assoc_args ) {
+		$this->exigir_modulo();
+
+		if ( isset( $assoc_args['forcar'] ) ) {
+			WP_CLI::error( '--forcar não existe neste comando: para refazer, desfaça o lote com "wp hbv migracao desfazer".' );
+		}
+
+		$arquivo = isset( $args[0] ) ? (string) $args[0] : '';
+		if ( '' === $arquivo || ! is_file( $arquivo ) || ! is_readable( $arquivo ) ) {
+			WP_CLI::error( 'Arquivo não encontrado ou ilegível: ' . $arquivo );
+		}
+
+		$simular = (bool) \WP_CLI\Utils\get_flag_value( $assoc_args, 'simular', false );
+
+		$lote = (string) \WP_CLI\Utils\get_flag_value( $assoc_args, 'lote', gmdate( 'Ymd-His' ) );
+		if ( ! preg_match( '/^[a-z0-9-]+$/', $lote ) ) {
+			WP_CLI::error( 'Nome de lote inválido: use só a-z, 0-9 e hífen.' );
+		}
+
+		$lidas       = $this->ler_campos( $arquivo );
+		$divergentes = $this->pares_divergentes( $lidas['linhas'] );
+
+		$relatorio         = null;
+		$caminho_relatorio = '';
+		if ( ! $simular ) {
+			$caminho_relatorio = $this->abrir_relatorio( $lote, $relatorio, self::CABECALHO_CAMPOS );
+		}
+
+		$estatisticas = array();
+		$motivos      = array();
+		$exemplos     = array();
+		$this->campos_vistos = array();
+
+		// Linhas com número de colunas errado.
+		foreach ( $lidas['invalidas'] as $inv ) {
+			$this->contar_campo( $estatisticas, '(linha inválida)', 'recusado' );
+			$motivos[ $inv['motivo'] ] = ( isset( $motivos[ $inv['motivo'] ] ) ? $motivos[ $inv['motivo'] ] : 0 ) + 1;
+			if ( $relatorio ) {
+				$this->escrever_linha( $relatorio, array( '', '', '', '', '', '', 'recusado', 'linha ' . $inv['linha'] . ': ' . $inv['motivo'] ) );
+			}
+		}
+
+		try {
+			$progresso = \WP_CLI\Utils\make_progress_bar( $simular ? 'Simulando' : 'Gravando', count( $lidas['linhas'] ) );
+
+			foreach ( array_chunk( $lidas['linhas'], self::BLOCO_CAMPOS ) as $bloco ) {
+				$posts = $this->carregar_posts_campos( $bloco );
+
+				foreach ( $bloco as $linha ) {
+					$r = $this->processar_campo( $linha, $posts, $divergentes, $lote, $simular );
+
+					$rotulo_campo = preg_match( '/^hbv_[a-z0-9_]+$/', $linha['campo'] ) ? $linha['campo'] : '(campo inválido)';
+					$this->contar_campo( $estatisticas, $rotulo_campo, $r['resultado'] );
+
+					if ( 'recusado' === $r['resultado'] ) {
+						$motivos[ $r['motivo'] ] = ( isset( $motivos[ $r['motivo'] ] ) ? $motivos[ $r['motivo'] ] : 0 ) + 1;
+					}
+					if ( 'conflito' === $r['resultado'] && count( $exemplos ) < self::EXEMPLOS ) {
+						$exemplos[] = $linha['id'] . ' ' . $linha['campo'] . ': atual "' . $r['anterior'] . '" | proposto "' . $linha['valor'] . '" | fonte: ' . $linha['fonte'];
+					}
+					if ( $relatorio ) {
+						$this->escrever_linha(
+							$relatorio,
+							array( $linha['id'], $linha['campo'], $linha['valor'], $linha['modo'], $linha['fonte'], $r['anterior'], $r['resultado'], $r['motivo'] )
+						);
+					}
+					$progresso->tick();
+				}
+				unset( $posts );
+				$this->limpar_memoria();
+			}
+			$progresso->finish();
+		} finally {
+			if ( $relatorio ) {
+				fclose( $relatorio );
+			}
+		}
+
+		$this->imprimir_resumo_campos( $estatisticas, $motivos, $exemplos, $simular );
+
+		if ( $simular ) {
+			WP_CLI::success( 'Simulação concluída: nada foi gravado.' );
+			return;
+		}
+
+		WP_CLI::log( 'Relatório: ' . $caminho_relatorio );
+		WP_CLI::success( 'Lote "' . $lote . '" concluído. Para voltar: wp hbv migracao desfazer --lote=' . $lote );
 	}
 
 	/* ---------- Leitura do plano ---------- */
@@ -3724,10 +3999,11 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 	 * $lote, só entram as pessoas que têm esse lote, e só com ele. Pagina por post_id,
 	 * então é seguro restaurar (e apagar o registro) enquanto percorre.
 	 *
-	 * @param string $lote Filtra por lote; vazio = todos.
+	 * @param string $lote     Filtra por lote; vazio = todos.
+	 * @param string $meta_key Meta lida (padrão: datas do comando "meses"; o "campos" usa META_CAMPOS).
 	 * @return Generator
 	 */
-	private function registros_datas( $lote ) {
+	private function registros_datas( $lote, $meta_key = self::META_DATAS ) {
 		global $wpdb;
 
 		$ultimo = 0;
@@ -3735,7 +4011,7 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 			$linhas = $wpdb->get_results(
 				$wpdb->prepare(
 					"SELECT post_id, meta_value FROM {$wpdb->postmeta} WHERE meta_key = %s AND post_id > %d ORDER BY post_id ASC LIMIT %d",
-					self::META_DATAS,
+					$meta_key,
 					$ultimo,
 					self::BLOCO
 				)
@@ -3765,6 +4041,601 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 
 			if ( $bloco ) {
 				yield $bloco;
+			}
+		}
+	}
+
+	/* ---------- Campos da ficha (comando "campos", 0.5.0) ---------- */
+
+	/**
+	 * Lê o TSV do comando "campos".
+	 *
+	 * Linhas com número de colunas errado vão para "invalidas". As demais entram em "linhas", cada
+	 * uma com "erro" (motivo de recusa que não depende do banco; vazio se está tudo certo).
+	 *
+	 * @param string $arquivo Caminho do arquivo.
+	 * @return array array( 'linhas' => array, 'invalidas' => array( array( 'linha' => int, 'motivo' => string ) ) ).
+	 *               Cada linha: id (texto), campo, valor, modo, fonte, erro, numero.
+	 */
+	private function ler_campos( $arquivo ) {
+		$esperado = self::ENTRADA_CAMPOS;
+
+		$fh = fopen( $arquivo, 'rb' );
+		if ( ! $fh ) {
+			WP_CLI::error( 'Não foi possível abrir o arquivo: ' . $arquivo );
+		}
+
+		// Tabulação como delimitador; enclosure "\0" para não tratar aspas (os valores podem ter aspas).
+		$cabecalho = fgetcsv( $fh, 0, "\t", "\0", '\\' );
+		if ( false === $cabecalho ) {
+			fclose( $fh );
+			WP_CLI::error( 'Arquivo vazio: ' . $arquivo );
+		}
+		if ( isset( $cabecalho[0] ) ) {
+			$cabecalho[0] = preg_replace( '/^\xEF\xBB\xBF/', '', (string) $cabecalho[0] );
+		}
+		if ( array_values( $cabecalho ) !== $esperado ) {
+			fclose( $fh );
+			WP_CLI::error( 'Cabeçalho inválido em ' . $arquivo . '. Esperado: ' . implode( "\t", $esperado ) );
+		}
+
+		$linhas    = array();
+		$invalidas = array();
+		$numero    = 1;
+
+		while ( false !== ( $campos = fgetcsv( $fh, 0, "\t", "\0", '\\' ) ) ) {
+			$numero++;
+
+			if ( array( null ) === $campos ) {
+				continue;
+			}
+			if ( count( $campos ) !== count( $esperado ) ) {
+				$invalidas[] = array(
+					'linha'  => $numero,
+					'motivo' => 'número de colunas errado (' . count( $campos ) . ' em vez de ' . count( $esperado ) . ')',
+				);
+				continue;
+			}
+
+			$l          = array_combine( $esperado, array_map( 'trim', $campos ) );
+			$l['numero'] = $numero;
+			$l['erro']   = '';
+
+			if ( ! ctype_digit( $l['id'] ) || (int) $l['id'] < 1 ) {
+				$l['erro'] = 'id inválido';
+			} elseif ( ! preg_match( '/^hbv_[a-z0-9_]+$/', $l['campo'] ) ) {
+				$l['erro'] = 'campo inválido (use a chave com prefixo hbv_)';
+			} elseif ( ! in_array( $l['modo'], self::MODOS_CAMPOS, true ) ) {
+				$l['erro'] = 'modo inválido (use preencher ou sobrescrever)';
+			} elseif ( '' === $l['valor'] ) {
+				$l['erro'] = 'valor vazio';
+			}
+
+			$linhas[] = $l;
+		}
+		fclose( $fh );
+
+		return array(
+			'linhas'    => $linhas,
+			'invalidas' => $invalidas,
+		);
+	}
+
+	/**
+	 * Pares id+campo que aparecem com valores diferentes no arquivo.
+	 *
+	 * @param array $linhas Linhas lidas.
+	 * @return array "id|campo" => true.
+	 */
+	private function pares_divergentes( $linhas ) {
+		$valores     = array();
+		$divergentes = array();
+		foreach ( $linhas as $l ) {
+			if ( '' !== $l['erro'] ) {
+				continue;
+			}
+			$chave = $l['id'] . '|' . $l['campo'];
+			if ( ! isset( $valores[ $chave ] ) ) {
+				$valores[ $chave ] = $l['valor'];
+			} elseif ( $valores[ $chave ] !== $l['valor'] ) {
+				$divergentes[ $chave ] = true;
+			}
+		}
+		return $divergentes;
+	}
+
+	/**
+	 * Carrega, numa só consulta, tipo e status dos posts de um bloco e aquece o cache de metas.
+	 *
+	 * @param array $bloco Linhas do bloco.
+	 * @return array ID => array( 'tipo' => string, 'status' => string ).
+	 */
+	private function carregar_posts_campos( $bloco ) {
+		global $wpdb;
+
+		$ids = array();
+		foreach ( $bloco as $l ) {
+			if ( '' === $l['erro'] ) {
+				$ids[ (int) $l['id'] ] = (int) $l['id'];
+			}
+		}
+		$ids = array_values( $ids );
+		if ( ! $ids ) {
+			return array();
+		}
+
+		$marcadores = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
+		$linhas     = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT ID, post_type, post_status FROM {$wpdb->posts} WHERE ID IN ({$marcadores}) LIMIT %d", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				array_merge( $ids, array( count( $ids ) ) )
+			)
+		);
+
+		$posts = array();
+		foreach ( (array) $linhas as $linha ) {
+			$posts[ (int) $linha->ID ] = array(
+				'tipo'   => (string) $linha->post_type,
+				'status' => (string) $linha->post_status,
+			);
+		}
+		update_meta_cache( 'post', array_keys( $posts ) );
+
+		return $posts;
+	}
+
+	/**
+	 * Processa uma linha do TSV de campos: valida, classifica e (fora da simulação) grava.
+	 *
+	 * @param array  $linha       Linha lida.
+	 * @param array  $posts       Posts do bloco (carregar_posts_campos()).
+	 * @param array  $divergentes Pares id|campo com valores diferentes no arquivo.
+	 * @param string $lote        Nome do lote.
+	 * @param bool   $simular     Se é simulação.
+	 * @return array array( 'resultado' => gravado|ja_igual|conflito|sobrescrito|recusado, 'motivo' => string, 'anterior' => string ).
+	 */
+	private function processar_campo( $linha, $posts, $divergentes, $lote, $simular ) {
+		$id    = (int) $linha['id'];
+		$campo = $linha['campo'];
+		$chave = $linha['id'] . '|' . $campo;
+
+		$recusa = function ( $motivo, $anterior = '' ) {
+			return array(
+				'resultado' => 'recusado',
+				'motivo'    => $motivo,
+				'anterior'  => $anterior,
+			);
+		};
+
+		if ( '' !== $linha['erro'] ) {
+			return $recusa( $linha['erro'] );
+		}
+		if ( isset( $divergentes[ $chave ] ) ) {
+			return $recusa( 'linhas repetidas com valores diferentes no arquivo' );
+		}
+		if ( isset( $this->campos_vistos[ $chave ] ) ) {
+			$primeiro = $this->campos_vistos[ $chave ];
+			if ( in_array( $primeiro['resultado'], array( 'gravado', 'sobrescrito' ), true ) ) {
+				return array(
+					'resultado' => 'ja_igual',
+					'motivo'    => 'linha repetida no arquivo',
+					'anterior'  => $linha['valor'],
+				);
+			}
+			return $primeiro;
+		}
+
+		$r = $this->classificar_campo( $linha, $id, $campo, $posts, $lote, $simular );
+
+		$this->campos_vistos[ $chave ] = $r;
+		return $r;
+	}
+
+	/**
+	 * Valida o post e o campo, compara com o valor atual e grava (fora da simulação).
+	 *
+	 * @param array  $linha   Linha lida.
+	 * @param int    $id      ID do post.
+	 * @param string $campo   Chave de meta (com prefixo).
+	 * @param array  $posts   Posts do bloco.
+	 * @param string $lote    Nome do lote.
+	 * @param bool   $simular Se é simulação.
+	 * @return array Como em processar_campo().
+	 */
+	private function classificar_campo( $linha, $id, $campo, $posts, $lote, $simular ) {
+		$resultado = static function ( $res, $motivo, $anterior ) {
+			return array(
+				'resultado' => $res,
+				'motivo'    => $motivo,
+				'anterior'  => $anterior,
+			);
+		};
+
+		if ( ! isset( $posts[ $id ] ) ) {
+			return $resultado( 'recusado', 'post inexistente', '' );
+		}
+		$tipo = $posts[ $id ]['tipo'];
+		if ( ! in_array( $tipo, hbv_cpts(), true ) ) {
+			return $resultado( 'recusado', 'post não é de um tipo hbv_* (' . $tipo . ')', '' );
+		}
+		if ( 'publish' !== $posts[ $id ]['status'] ) {
+			return $resultado( 'recusado', 'post não publicado (' . $posts[ $id ]['status'] . ')', '' );
+		}
+
+		$defs = hbv_fields_for( $tipo );
+		unset( $defs['fontes'] );
+		$chave_campo = substr( $campo, 4 );
+		if ( ! isset( $defs[ $chave_campo ] ) ) {
+			return $resultado( 'recusado', 'campo ' . $campo . ' não existe na ficha de ' . $tipo, '' );
+		}
+		$def = $defs[ $chave_campo ];
+
+		$erro  = '';
+		$novo  = $this->normalizar_valor_campo( $linha['valor'], $def, $erro );
+		if ( null === $novo ) {
+			return $resultado( 'recusado', $erro, '' );
+		}
+
+		// Valor atual (várias linhas de meta ou valor não escalar: não mexe).
+		$existentes = get_post_meta( $id, $campo, false );
+		if ( count( $existentes ) > 1 ) {
+			return $resultado( 'recusado', 'campo com mais de uma linha de meta', '' );
+		}
+		$atual = $existentes ? $existentes[0] : null;
+		if ( null !== $atual && ! is_scalar( $atual ) ) {
+			return $resultado( 'recusado', 'valor atual do campo não é texto nem número', '' );
+		}
+		$atual = ( null === $atual ) ? null : (string) $atual;
+		$mostra = ( null === $atual ) ? '' : $atual;
+
+		// Registro de lotes anteriores.
+		$registro = $this->ler_registro_campos( $id );
+		if ( null === $registro ) {
+			return $resultado( 'recusado', 'registro ' . self::META_CAMPOS . ' ilegível', $mostra );
+		}
+		foreach ( $registro as $outro => $entrada ) {
+			if ( ! is_array( $entrada ) || ! isset( $entrada['campos'] ) || ! is_array( $entrada['campos'] ) || ! array_key_exists( $campo, $entrada['campos'] ) ) {
+				continue;
+			}
+			if ( (string) $outro === $lote
+				&& isset( $entrada['gravados'] ) && is_array( $entrada['gravados'] )
+				&& array_key_exists( $campo, $entrada['gravados'] ) && (string) $entrada['gravados'][ $campo ] === $novo
+				&& $atual === $novo ) {
+				return $resultado( 'ja_igual', 'já gravado por este lote', $mostra );
+			}
+			return $resultado( 'recusado', 'campo gravado pelo lote ' . $outro, $mostra );
+		}
+
+		$vazio = ( null === $atual || '' === $atual || ( '0' === $atual && in_array( $def['type'], array( 'number', 'post' ), true ) ) );
+		if ( $vazio ) {
+			$res = 'gravado';
+		} elseif ( $this->valores_iguais( $atual, $novo, $def ) ) {
+			return $resultado( 'ja_igual', '', $mostra );
+		} elseif ( 'preencher' === $linha['modo'] ) {
+			return $resultado( 'conflito', 'campo já tem outro valor', $mostra );
+		} else {
+			$res = 'sobrescrito';
+		}
+
+		if ( ! $simular ) {
+			$falha = $this->gravar_campo( $id, $campo, $novo, $atual, $lote );
+			if ( '' !== $falha ) {
+				return $resultado( 'recusado', $falha, $mostra );
+			}
+		}
+
+		return $resultado( $res, '', $mostra );
+	}
+
+	/**
+	 * Valida e sanitiza um valor conforme o tipo do campo.
+	 *
+	 * @param string $valor Valor do TSV (já sem espaços nas pontas).
+	 * @param array  $def   Definição do campo (hbv_fields_for()).
+	 * @param string $erro  Recebe o motivo da recusa.
+	 * @return string|null Valor na forma gravada; null se recusado.
+	 */
+	private function normalizar_valor_campo( $valor, $def, &$erro ) {
+		switch ( $def['type'] ) {
+			case 'number':
+				if ( ! preg_match( '/^[0-9]{1,9}$/', $valor ) ) {
+					$erro = 'valor não é um inteiro';
+					return null;
+				}
+				$n = (int) $valor;
+				if ( isset( $def['min'], $def['max'] ) ) {
+					if ( $n < $def['min'] || $n > $def['max'] ) {
+						$erro = 'número fora do intervalo ' . $def['min'] . ' a ' . $def['max'];
+						return null;
+					}
+				} elseif ( $n < 1 ) {
+					$erro = 'número menor que 1';
+					return null;
+				}
+				return (string) $n;
+
+			case 'select':
+				foreach ( array_keys( $def['options'] ) as $opcao ) {
+					if ( (string) $opcao === $valor ) {
+						return (string) $opcao;
+					}
+				}
+				$erro = 'valor não está entre as opções do campo';
+				return null;
+
+			case 'post':
+				if ( ! preg_match( '/^[0-9]{1,12}$/', $valor ) || (int) $valor < 1 ) {
+					$erro = 'valor não é um ID de post';
+					return null;
+				}
+				$alvo = get_post( (int) $valor );
+				if ( ! $alvo || $alvo->post_type !== $def['post_type'] || in_array( $alvo->post_status, array( 'trash', 'auto-draft' ), true ) ) {
+					$erro = 'ID não é de um post existente do tipo ' . $def['post_type'];
+					return null;
+				}
+				return (string) (int) $valor;
+
+			case 'url':
+				$limpo = esc_url_raw( $valor );
+				break;
+
+			case 'textarea':
+				$limpo = sanitize_textarea_field( $valor );
+				break;
+
+			default:
+				$limpo = sanitize_text_field( $valor );
+		}
+
+		if ( '' === $limpo ) {
+			$erro = 'valor vazio após a sanitização';
+			return null;
+		}
+		return $limpo;
+	}
+
+	/**
+	 * Compara o valor atual do banco com o valor novo (números sem zeros à esquerda).
+	 *
+	 * @param string $atual Valor atual (texto).
+	 * @param string $novo  Valor novo na forma gravada.
+	 * @param array  $def   Definição do campo.
+	 * @return bool
+	 */
+	private function valores_iguais( $atual, $novo, $def ) {
+		if ( in_array( $def['type'], array( 'number', 'post' ), true ) && ctype_digit( $atual ) && ctype_digit( $novo ) ) {
+			return (int) $atual === (int) $novo;
+		}
+		return $atual === $novo;
+	}
+
+	/**
+	 * Lê o registro _hbv_migracao_campos de um post.
+	 *
+	 * @param int $id ID do post.
+	 * @return array|null Mapa lote => entrada (vazio se não há registro); null se ilegível.
+	 */
+	private function ler_registro_campos( $id ) {
+		$bruto = get_post_meta( $id, self::META_CAMPOS, true );
+		if ( '' === $bruto || false === $bruto ) {
+			return array();
+		}
+		$registro = is_string( $bruto ) ? json_decode( $bruto, true ) : null;
+		return is_array( $registro ) ? $registro : null;
+	}
+
+	/**
+	 * Grava um campo da ficha, com o registro de desfazer escrito antes.
+	 *
+	 * Se algo falhar, devolve o campo e o registro ao estado anterior.
+	 *
+	 * @param int         $id       ID do post.
+	 * @param string      $campo    Chave de meta (com prefixo).
+	 * @param string      $novo     Valor novo.
+	 * @param string|null $anterior Valor anterior (null = o meta não existia).
+	 * @param string      $lote     Nome do lote.
+	 * @return string Erro (vazio se tudo certo).
+	 */
+	private function gravar_campo( $id, $campo, $novo, $anterior, $lote ) {
+		$bruto_antes = get_post_meta( $id, self::META_CAMPOS, true );
+		$bruto_antes = is_string( $bruto_antes ) ? $bruto_antes : '';
+		$registro    = ( '' === $bruto_antes ) ? array() : json_decode( $bruto_antes, true );
+		if ( ! is_array( $registro ) ) {
+			return 'registro ' . self::META_CAMPOS . ' ilegível';
+		}
+
+		$entrada = ( isset( $registro[ $lote ] ) && is_array( $registro[ $lote ] ) ) ? $registro[ $lote ] : array(
+			'data'     => gmdate( 'Y-m-d\TH:i:s\Z' ),
+			'campos'   => array(),
+			'gravados' => array(),
+		);
+		if ( ! isset( $entrada['campos'] ) || ! is_array( $entrada['campos'] ) ) {
+			$entrada['campos'] = array();
+		}
+		if ( ! isset( $entrada['gravados'] ) || ! is_array( $entrada['gravados'] ) ) {
+			$entrada['gravados'] = array();
+		}
+		$entrada['campos'][ $campo ]   = $anterior;
+		$entrada['gravados'][ $campo ] = $novo;
+		$registro[ $lote ]             = $entrada;
+
+		$json = wp_json_encode( $registro );
+		if ( ! is_string( $json ) ) {
+			return 'não foi possível montar o registro de desfazer';
+		}
+		update_post_meta( $id, self::META_CAMPOS, wp_slash( $json ) );
+		if ( (string) get_post_meta( $id, self::META_CAMPOS, true ) !== $json ) {
+			$this->restaurar_registro_campos( $id, $bruto_antes );
+			return 'falha ao gravar o registro de desfazer';
+		}
+
+		update_post_meta( $id, $campo, wp_slash( $novo ) );
+		$lido = metadata_exists( 'post', $id, $campo ) ? get_post_meta( $id, $campo, true ) : null;
+		if ( ! is_scalar( $lido ) || (string) $lido !== $novo ) {
+			if ( null === $anterior ) {
+				delete_post_meta( $id, $campo );
+			} else {
+				update_post_meta( $id, $campo, wp_slash( $anterior ) );
+			}
+			$this->restaurar_registro_campos( $id, $bruto_antes );
+			return 'falha ao gravar ' . $campo;
+		}
+		return '';
+	}
+
+	/**
+	 * Devolve o meta _hbv_migracao_campos ao conteúdo de antes (apaga se não existia).
+	 *
+	 * @param int    $id    ID do post.
+	 * @param string $bruto JSON anterior ('' = não existia).
+	 */
+	private function restaurar_registro_campos( $id, $bruto ) {
+		if ( '' === $bruto ) {
+			delete_post_meta( $id, self::META_CAMPOS );
+		} else {
+			update_post_meta( $id, self::META_CAMPOS, wp_slash( $bruto ) );
+		}
+	}
+
+	/**
+	 * Desfaz o lote do comando "campos" em um post.
+	 *
+	 * Restaura cada campo ao valor anterior (apaga o meta se não existia), exceto o que foi
+	 * alterado depois do lote (valor atual diferente do gravado): esse fica como está, com aviso.
+	 * Depois remove a entrada do lote; o meta de registro some quando fica vazio.
+	 *
+	 * @param int    $id      ID do post.
+	 * @param string $lote    Nome do lote.
+	 * @param bool   $simular Se é simulação (não grava).
+	 * @param array  $avisos  Recebe os avisos (por referência).
+	 * @return int Campos restaurados (ou que seriam, na simulação).
+	 */
+	private function restaurar_campos_post( $id, $lote, $simular, &$avisos ) {
+		$registro = $this->ler_registro_campos( $id );
+		if ( null === $registro ) {
+			$avisos[] = 'registro ' . self::META_CAMPOS . ' ilegível; mantido.';
+			return 0;
+		}
+		if ( ! isset( $registro[ $lote ] ) ) {
+			return 0;
+		}
+		$entrada = $registro[ $lote ];
+		if ( ! is_array( $entrada ) || ! isset( $entrada['campos'] ) || ! is_array( $entrada['campos'] ) ) {
+			$avisos[] = 'entrada do lote ilegível; mantida.';
+			return 0;
+		}
+		$gravados = ( isset( $entrada['gravados'] ) && is_array( $entrada['gravados'] ) ) ? $entrada['gravados'] : array();
+
+		$restaurados = 0;
+		foreach ( $entrada['campos'] as $campo => $anterior ) {
+			$campo = (string) $campo;
+			if ( ! preg_match( '/^hbv_[a-z0-9_]+$/', $campo ) ) {
+				continue;
+			}
+
+			if ( array_key_exists( $campo, $gravados ) ) {
+				$atual = metadata_exists( 'post', $id, $campo ) ? get_post_meta( $id, $campo, true ) : null;
+				if ( null === $atual || ! is_scalar( $atual ) || (string) $atual !== (string) $gravados[ $campo ] ) {
+					$avisos[] = $campo . ' foi alterado depois do lote (atual "' . ( is_scalar( $atual ) ? (string) $atual : '' ) . '", gravado "' . (string) $gravados[ $campo ] . '"); não restaurado.';
+					continue;
+				}
+			}
+
+			if ( ! $simular ) {
+				if ( null === $anterior ) {
+					delete_post_meta( $id, $campo );
+				} else {
+					update_post_meta( $id, $campo, wp_slash( (string) $anterior ) );
+				}
+			}
+			$restaurados++;
+		}
+
+		if ( ! $simular ) {
+			unset( $registro[ $lote ] );
+			if ( $registro ) {
+				update_post_meta( $id, self::META_CAMPOS, wp_slash( wp_json_encode( $registro ) ) );
+			} else {
+				delete_post_meta( $id, self::META_CAMPOS );
+			}
+		}
+		return $restaurados;
+	}
+
+	/**
+	 * Percorre os registros _hbv_migracao_campos em blocos (ver registros_datas()).
+	 *
+	 * @param string $lote Filtra por lote; vazio = todos.
+	 * @return Generator
+	 */
+	private function registros_campos( $lote ) {
+		return $this->registros_datas( $lote, self::META_CAMPOS );
+	}
+
+	/**
+	 * Incrementa o contador por campo e resultado.
+	 *
+	 * @param array  $estatisticas Contadores (por referência).
+	 * @param string $campo        Chave do campo.
+	 * @param string $resultado    Resultado da linha.
+	 */
+	private function contar_campo( &$estatisticas, $campo, $resultado ) {
+		if ( ! isset( $estatisticas[ $campo ][ $resultado ] ) ) {
+			$estatisticas[ $campo ][ $resultado ] = 0;
+		}
+		$estatisticas[ $campo ][ $resultado ]++;
+	}
+
+	/**
+	 * Imprime o resumo por campo, os motivos de recusa e, na simulação, exemplos de conflito.
+	 *
+	 * @param array $estatisticas Contadores por campo.
+	 * @param array $motivos      Motivos => contagem.
+	 * @param array $exemplos     Exemplos de conflito.
+	 * @param bool  $simular      Se é simulação.
+	 */
+	private function imprimir_resumo_campos( $estatisticas, $motivos, $exemplos, $simular ) {
+		$rotulo = $simular ? 'a_gravar' : 'gravados';
+		$cols   = array( 'campo', $rotulo, 'ja_iguais', 'conflitos', 'sobrescritas', 'recusadas' );
+		$linhas = array();
+		$totais = array_fill_keys( $cols, 0 );
+		$totais['campo'] = 'TOTAL';
+
+		ksort( $estatisticas );
+		foreach ( $estatisticas as $campo => $c ) {
+			$linha = array(
+				'campo'        => $campo,
+				$rotulo        => isset( $c['gravado'] ) ? $c['gravado'] : 0,
+				'ja_iguais'    => isset( $c['ja_igual'] ) ? $c['ja_igual'] : 0,
+				'conflitos'    => isset( $c['conflito'] ) ? $c['conflito'] : 0,
+				'sobrescritas' => isset( $c['sobrescrito'] ) ? $c['sobrescrito'] : 0,
+				'recusadas'    => isset( $c['recusado'] ) ? $c['recusado'] : 0,
+			);
+			foreach ( array_slice( $cols, 1 ) as $k ) {
+				$totais[ $k ] += $linha[ $k ];
+			}
+			$linhas[] = $linha;
+		}
+
+		if ( $linhas ) {
+			$linhas[] = $totais;
+			\WP_CLI\Utils\format_items( 'table', $linhas, $cols );
+		} else {
+			WP_CLI::log( 'Nenhuma linha para processar.' );
+		}
+
+		if ( $motivos ) {
+			arsort( $motivos );
+			WP_CLI::log( "\nMotivos (recusadas):" );
+			foreach ( $motivos as $motivo => $qtd ) {
+				WP_CLI::log( sprintf( '  %5d  %s', $qtd, $motivo ) );
+			}
+		}
+
+		if ( $simular && $exemplos ) {
+			WP_CLI::log( "\nExemplos de conflito (id campo: valor atual | proposto | fonte):" );
+			foreach ( $exemplos as $exemplo ) {
+				WP_CLI::log( '    ' . $exemplo );
 			}
 		}
 	}

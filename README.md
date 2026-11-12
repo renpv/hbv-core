@@ -64,6 +64,9 @@ Desde a 0.4.0, `wp hbv migracao meses` divide as 12 páginas de mês (janeiro a 
 (`hbv_fato`), grava dia e mês de nascimento e falecimento nas biografias e guarda o texto de cada
 mês na option `hbv_meses`; o endereço antigo (`/janeiro/`) redireciona por caminho fixo.
 
+Desde a 0.5.0, `wp hbv migracao campos` grava campos da ficha (post meta) em qualquer tipo, a partir
+de um TSV (`id`, `campo`, `valor`, `modo`, `fonte`), com simulação, relatório e desfazer por lote.
+
 ## Próximos módulos (plano de modernização)
 
 Compartilhar e Open Graph, como citar, dados
