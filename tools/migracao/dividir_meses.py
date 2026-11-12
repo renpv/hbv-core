@@ -82,6 +82,8 @@ def blocos(secao):
 def limpar_abertura(h):
     # Tira o "⇒" e o fecho de tags soltas que ficaram antes do nome da seção.
     h = re.sub(r'<strong>\s*(<span[^>]*>\s*)*(<em>\s*)?(<span[^>]*>\s*)?⇒?\s*(</span>\s*)*$', '', h.strip())
+    # O tema já põe o título "As informações básicas": tira o parágrafo que o repetia.
+    h = re.sub(r'^\s*<p[^>]*>\s*<strong>\s*AS INFORMA[ÇC][ÕO]ES B[ÁA]SICAS:?\s*</strong>\s*</p>', '', h.strip(), flags=re.I)
     return h.strip()
 
 
