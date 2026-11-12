@@ -3,6 +3,29 @@
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/). Versões em
 [SemVer](https://semver.org/lang/pt-BR/).
 
+## [0.4.0] - 2026-11-12
+
+### Adicionado
+- Campos de `hbv_pessoa`: dia, mês e ano de nascimento e de falecimento (`hbv_nascimento_dia`,
+  `hbv_nascimento_mes`, `hbv_nascimento_ano` e os três de falecimento). Servem para "Nasceram
+  neste mês" e "Hoje na história"; o campo de texto continua sendo o que aparece na ficha.
+- `wp hbv migracao meses <plano-fatos.jsonl> <meses.json> <datas-pessoas-casadas.tsv>`: divide as
+  12 páginas de mês em fatos (`hbv_fato`, um por item do "Programa de eventos do mês"), grava dia e
+  mês de nascimento e falecimento nas biografias (sem sobrescrever: valor diferente vira conflito
+  no relatório), guarda a abertura e a bibliografia de cada mês na option `hbv_meses` e passa a
+  página para rascunho. Com `--simular`, lotes e dois relatórios TSV (`<lote>.tsv` e
+  `<lote>-pessoas.tsv`).
+- Caminhos fixos (`hbv_core_caminhos_fixos`): o módulo de redirecionamentos resolve endereços
+  antigos que não são post nem termo (`/janeiro/` vai para `/datas-e-fatos/?hbv_mes=1`).
+  Função pública `hbv_core_caminhos_fixos()`.
+- `desfazer`, `verificar` e `status` passam a tratar fatos, datas das biografias, páginas de mês,
+  `hbv_meses` e caminhos fixos.
+
+### Alterado
+- `hbv_core_resolver_caminho()` consulta os caminhos fixos depois de posts e termos.
+- O registro `_hbv_migracao` de fato criado ganha `"tipo": "hbv_fato"`, e o da página de mês
+  traz `"mes"`, para o `desfazer` e o `status` distinguirem fatos de obras e meses de autores.
+
 ## [0.3.0] - 2026-11-11
 
 ### Adicionado

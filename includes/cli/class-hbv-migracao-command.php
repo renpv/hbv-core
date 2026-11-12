@@ -1,6 +1,6 @@
 <?php
 /**
- * Comandos WP-CLI do migrador: wp hbv migracao <converter|desfazer|status|verificar|obras|titulos>.
+ * Comandos WP-CLI do migrador: wp hbv migracao <converter|desfazer|status|verificar|obras|titulos|meses>.
  *
  * Ver docs/MIGRADOR.md. Este arquivo só é carregado quando WP_CLI está ativo.
  *
@@ -21,12 +21,18 @@ if ( ! defined( 'ABSPATH' ) ) {
  *
  * Desde a 0.3.0: "obras" divide as páginas de bibliografia e discografia em uma
  * obra por livro ou disco (taxonomia Autoria) e "titulos" aplica títulos revisados.
+ * Desde a 0.4.0: "meses" divide as 12 páginas de mês em fatos (hbv_fato), datas de
+ * nascimento e falecimento nas biografias, texto do mês (option hbv_meses) e um
+ * redirecionamento por caminho fixo.
  */
 class HBV_Migracao_Command extends WP_CLI_Command {
 
 	const META_REGISTRO = '_hbv_migracao';
 	const META_CAMINHO  = '_hbv_caminho_antigo';
 	const META_TITULO   = '_hbv_titulo_original';
+	const META_DATAS    = '_hbv_migracao_datas';
+	const OPCAO_MESES    = 'hbv_meses';
+	const OPCAO_CAMINHOS = 'hbv_core_caminhos_fixos';
 	const BLOCO         = 100;
 	const EXEMPLOS      = 5;
 
@@ -84,6 +90,19 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 	const ROTULO_TERMO     = 'hbv_autoria (termo criado)';
 
 	/**
+	 * Rótulos dos registros novos (0.4.0) em "status" e "desfazer".
+	 */
+	const ROTULO_FATO  = 'hbv_fato (criado)';
+	const ROTULO_MES   = 'página de mês (dividida)';
+	const ROTULO_DATAS = 'biografia (datas gravadas)';
+
+	/**
+	 * Colunas do relatório do comando "meses" e do relatório de pessoas (<lote>-pessoas.tsv).
+	 */
+	const CABECALHO_MESES   = array( 'mes', 'id_pagina', 'slug', 'fatos_criados', 'ids', 'datas_gravadas', 'ja_iguais', 'conflitos', 'sem_biografia', 'caminho_antigo', 'destino', 'resultado', 'motivo' );
+	const CABECALHO_PESSOAS = array( 'mes', 'id', 'nome', 'tipo', 'data_atual', 'data_do_mes', 'resultado', 'motivo' );
+
+	/**
 	 * Nível de cada confiança (maior = mais certa).
 	 */
 	const NIVEL_CONFIANCA = array(
@@ -120,6 +139,13 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 	 * @var int
 	 */
 	private $capas_ignoradas = 0;
+
+	/**
+	 * Pessoa e tipo ("id|tipo") com data já planejada para gravar nesta execução (linhas repetidas do TSV).
+	 *
+	 * @var array
+	 */
+	private $datas_vistas = array();
 
 	/**
 	 * Converte posts para os tipos do HBV Core conforme um plano TSV.
@@ -320,6 +346,11 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 	 * (e, nos demais, só o caminho antigo que veio da página desfeita). Um termo
 	 * criado pelo lote que ainda tem obras de outro lote é mantido, com aviso.
 	 *
+	 * Para o lote do comando "meses": apaga os fatos criados (definitivamente), restaura
+	 * dia e mês das biografias a partir de _hbv_migracao_datas, tira o mês de hbv_meses
+	 * e o caminho de hbv_core_caminhos_fixos (apagando as options que ficam vazias) e
+	 * devolve a página do mês ao status anterior.
+	 *
 	 * ## OPTIONS
 	 *
 	 * [--lote=<nome>]
@@ -400,6 +431,35 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 				}
 			}
 
+			// Datas das biografias (comando "meses").
+			foreach ( $this->registros_datas( $filtro ) as $bloco ) {
+				foreach ( $bloco as $post_id => $mapa ) {
+					if ( null === $mapa ) {
+						$invalidos++;
+						WP_CLI::warning( 'Registro ' . self::META_DATAS . ' ilegível na biografia ' . $post_id . '; ignorado.' );
+						continue;
+					}
+					foreach ( array_keys( $mapa ) as $lote_datas ) {
+						$lote_datas = (string) $lote_datas;
+						if ( '' !== $filtro && $lote_datas !== $filtro ) {
+							continue;
+						}
+						$revertidos[ self::ROTULO_DATAS ] = ( isset( $revertidos[ self::ROTULO_DATAS ] ) ? $revertidos[ self::ROTULO_DATAS ] : 0 ) + 1;
+
+						if ( $simular ) {
+							continue;
+						}
+
+						$problema = $this->restaurar_datas_pessoa( $post_id, $lote_datas );
+						if ( '' !== $problema ) {
+							$avisos++;
+							WP_CLI::warning( 'Biografia ' . $post_id . ': ' . $problema );
+						}
+					}
+				}
+				$this->limpar_memoria();
+			}
+
 			foreach ( $this->registros_termos( $filtro ) as $bloco ) {
 				foreach ( $bloco as $term_id => $dados ) {
 					if ( null === $dados ) {
@@ -454,14 +514,15 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 			WP_CLI::warning( $avisos . ' item(ns) com aviso (veja acima).' );
 		}
 
-		WP_CLI::success( ( $simular ? 'Simulação: seriam desfeitos ' : 'Desfeitos: ' ) . array_sum( $revertidos ) . ' item(ns) (posts, obras, páginas e termos).' );
+		WP_CLI::success( ( $simular ? 'Simulação: seriam desfeitos ' : 'Desfeitos: ' ) . array_sum( $revertidos ) . ' item(ns) (posts, obras, fatos, datas, páginas e termos).' );
 	}
 
 	/**
 	 * Mostra os lotes aplicados e quantos posts ainda são do tipo post.
 	 *
 	 * Além das conversões de tipo, conta por lote as obras criadas, as páginas
-	 * divididas e os termos de autoria criados pelo comando "obras".
+	 * divididas e os termos de autoria criados pelo comando "obras", e os fatos
+	 * criados, os meses divididos e as biografias com datas gravadas pelo "meses".
 	 *
 	 * ## EXAMPLES
 	 *
@@ -521,6 +582,32 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 			$this->limpar_memoria();
 		}
 
+		foreach ( $this->registros_datas( '' ) as $bloco ) {
+			foreach ( $bloco as $mapa ) {
+				if ( null === $mapa ) {
+					continue;
+				}
+				foreach ( $mapa as $lote_datas => $entrada ) {
+					$lote_datas = (string) $lote_datas;
+					$data       = ( is_array( $entrada ) && isset( $entrada['data'] ) ) ? (string) $entrada['data'] : '';
+					$chave      = $lote_datas . '|' . self::ROTULO_DATAS;
+					if ( ! isset( $grupos[ $chave ] ) ) {
+						$grupos[ $chave ] = array(
+							'lote'       => $lote_datas,
+							'data'       => $data,
+							'tipo_novo'  => self::ROTULO_DATAS,
+							'quantidade' => 0,
+						);
+					}
+					$grupos[ $chave ]['quantidade']++;
+					if ( '' !== $data && ( '' === $grupos[ $chave ]['data'] || $data < $grupos[ $chave ]['data'] ) ) {
+						$grupos[ $chave ]['data'] = $data;
+					}
+				}
+			}
+			$this->limpar_memoria();
+		}
+
 		if ( $grupos ) {
 			ksort( $grupos );
 			\WP_CLI\Utils\format_items( 'table', array_values( $grupos ), array( 'lote', 'data', 'tipo_novo', 'quantidade' ) );
@@ -544,7 +631,9 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 	 * Passa _hbv_caminho_antigo pelo resolvedor do módulo de redirecionamentos
 	 * (sem HTTP) e compara com get_permalink(). Confere também cada
 	 * _hbv_caminho_antigo de termo de autoria (páginas divididas pelo comando
-	 * "obras"): deve resolver para o link do termo. Termina com erro se houver falha.
+	 * "obras"): deve resolver para o link do termo. Confere também o caminho fixo de cada
+	 * página de mês dividida pelo comando "meses": deve resolver para o destino registrado
+	 * (home_url + /datas-e-fatos/?hbv_mes=N). Termina com erro se houver falha.
 	 *
 	 * ## OPTIONS
 	 *
@@ -592,6 +681,19 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 			foreach ( $bloco as $post_id => $dados ) {
 				if ( null !== $dados && 'criada' === $dados['acao'] ) {
 					continue; // Obra nova: não tem endereço antigo.
+				}
+				if ( null !== $dados && 'dividida' === $dados['acao'] && 'mes' === $dados['subtipo'] ) {
+					$total++;
+
+					$esperado = home_url( $dados['destino'] );
+					$obtido   = hbv_core_resolver_caminho( $dados['caminho_antigo'] );
+					$rotulo   = 'mes:' . $dados['mes'] . ' (post ' . $post_id . ')';
+					if ( null === $obtido ) {
+						$falhas[] = $this->falha( $rotulo, $dados['caminho_antigo'], $esperado, '', 'não resolve (caminho fixo ausente em ' . self::OPCAO_CAMINHOS . ')' );
+					} elseif ( $obtido !== $esperado ) {
+						$falhas[] = $this->falha( $rotulo, $dados['caminho_antigo'], $esperado, $obtido, 'resolve para outro endereço' );
+					}
+					continue;
 				}
 				if ( null !== $dados && 'dividida' === $dados['acao'] ) {
 					if ( '' !== $dados['caminho_antigo'] ) {
@@ -896,6 +998,277 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 		}
 
 		WP_CLI::log( 'Relatório: ' . $caminho_relatorio );
+		WP_CLI::success( 'Lote "' . $lote . '" concluído. Para voltar: wp hbv migracao desfazer --lote=' . $lote );
+	}
+
+	/**
+	 * Divide as 12 páginas de mês em fatos, datas das biografias e texto do mês.
+	 *
+	 * Lê plano-fatos.jsonl (dividir_meses.py), meses.json (idem) e
+	 * datas-pessoas-casadas.tsv (casar_pessoas.py). Para cada mês, na ordem:
+	 * confere a página; cria um hbv_fato por item do "Programa de eventos do mês";
+	 * grava dia e mês de nascimento ou falecimento nas biografias casadas (sem
+	 * sobrescrever: valor diferente vira conflito e só entra no relatório);
+	 * guarda a abertura e a bibliografia na option hbv_meses; passa a página para
+	 * rascunho e registra o endereço antigo em hbv_core_caminhos_fixos (301 para
+	 * /datas-e-fatos/?hbv_mes=N). Se algo do mês falhar, o mês inteiro é desfeito
+	 * e recusado; os outros seguem.
+	 *
+	 * ## OPTIONS
+	 *
+	 * <plano-fatos>
+	 * : Caminho do plano-fatos.jsonl (um fato por linha).
+	 *
+	 * <meses>
+	 * : Caminho do meses.json (chaves "1" a "12").
+	 *
+	 * <datas-pessoas>
+	 * : Caminho do datas-pessoas-casadas.tsv (id, mes, dia, tipo, como, slug, nome).
+	 *
+	 * [--simular]
+	 * : Não grava nada (nem relatório nem termos): mostra, por mês, fatos a criar,
+	 * datas a gravar, já iguais, conflitos e sem biografia, e 5 exemplos de fatos.
+	 *
+	 * [--lote=<nome>]
+	 * : Nome do lote, só com a-z, 0-9 e hífen. Padrão: AAAAMMDD-HHMMSS (UTC).
+	 *
+	 * ## EXAMPLES
+	 *
+	 *     # Ver o que mudaria, sem gravar
+	 *     wp hbv migracao meses plano-fatos.jsonl meses.json datas-pessoas-casadas.tsv --simular
+	 *
+	 *     # Gravar
+	 *     wp hbv migracao meses plano-fatos.jsonl meses.json datas-pessoas-casadas.tsv --lote=meses-1
+	 *
+	 * @when after_wp_load
+	 *
+	 * @param array $args       Argumentos posicionais.
+	 * @param array $assoc_args Argumentos nomeados.
+	 */
+	public function meses( $args, $assoc_args ) {
+		$this->exigir_modulo();
+
+		if ( isset( $assoc_args['forcar'] ) ) {
+			WP_CLI::error( '--forcar não existe neste comando: meses já processados são sempre pulados. Para refazer, desfaça o lote com "wp hbv migracao desfazer".' );
+		}
+
+		$arq_fatos  = isset( $args[0] ) ? (string) $args[0] : '';
+		$arq_meses  = isset( $args[1] ) ? (string) $args[1] : '';
+		$arq_datas  = isset( $args[2] ) ? (string) $args[2] : '';
+		foreach ( array( $arq_fatos, $arq_meses, $arq_datas ) as $arquivo ) {
+			if ( '' === $arquivo || ! is_file( $arquivo ) || ! is_readable( $arquivo ) ) {
+				WP_CLI::error( 'Arquivo não encontrado ou ilegível: ' . $arquivo );
+			}
+		}
+
+		$simular = (bool) \WP_CLI\Utils\get_flag_value( $assoc_args, 'simular', false );
+
+		$lote = (string) \WP_CLI\Utils\get_flag_value( $assoc_args, 'lote', gmdate( 'Ymd-His' ) );
+		if ( ! preg_match( '/^[a-z0-9-]+$/', $lote ) ) {
+			WP_CLI::error( 'Nome de lote inválido: use só a-z, 0-9 e hífen.' );
+		}
+
+		$lidos_fatos = $this->ler_jsonl( $arq_fatos, 'plano-fatos', 'fato' );
+		$meses       = $this->ler_meses( $arq_meses );
+		$lidas       = $this->ler_datas_pessoas( $arq_datas );
+
+		// Página -> mês, só dos meses válidos.
+		$pagina_do_mes = array();
+		foreach ( $meses as $n => $m ) {
+			if ( is_array( $m ) ) {
+				$pagina_do_mes[ $m['id'] ] = $n;
+			}
+		}
+
+		// Fatos por página, na ordem de "ordem" (empate: ordem do arquivo).
+		$fatos_da_pagina = array();
+		$orfas           = array();
+		$sequencia       = 0;
+		foreach ( $lidos_fatos['linhas'] as $item ) {
+			$fato              = $item['dados'] + array( 'linha' => $item['linha'], 'sequencia' => $sequencia++ );
+			if ( ! isset( $pagina_do_mes[ $fato['id'] ] ) ) {
+				$orfas[] = 'linha ' . $item['linha'] . ': id_pagina ' . $fato['id'] . ' não é de nenhum mês válido de meses.json';
+				continue;
+			}
+			$fatos_da_pagina[ $fato['id'] ][] = $fato;
+		}
+		foreach ( $fatos_da_pagina as $id => $lista ) {
+			usort(
+				$lista,
+				static function ( $a, $b ) {
+					if ( $a['ordem'] !== $b['ordem'] ) {
+						return $a['ordem'] < $b['ordem'] ? -1 : 1;
+					}
+					return $a['sequencia'] < $b['sequencia'] ? -1 : 1;
+				}
+			);
+			$fatos_da_pagina[ $id ] = $lista;
+		}
+
+		// Linhas inválidas do plano-fatos: com id_pagina conhecido, recusam o mês; sem, são "soltas".
+		$invalidas_do_mes = array();
+		$soltas           = $orfas;
+		foreach ( $lidos_fatos['invalidas'] as $inv ) {
+			if ( isset( $inv['id_pagina'] ) && isset( $pagina_do_mes[ $inv['id_pagina'] ] ) ) {
+				$invalidas_do_mes[ $pagina_do_mes[ $inv['id_pagina'] ] ][] = 'linha ' . $inv['linha'] . ': ' . $inv['motivo'];
+			} else {
+				$soltas[] = 'linha ' . $inv['linha'] . ': ' . $inv['motivo'];
+			}
+		}
+		unset( $lidos_fatos );
+
+		// Um fato perdido em silêncio deixaria o mês incompleto: sem atribuição possível, não grava.
+		if ( $soltas ) {
+			foreach ( array_slice( $soltas, 0, 10 ) as $solta ) {
+				WP_CLI::warning( 'plano-fatos, ' . $solta );
+			}
+			if ( count( $soltas ) > 10 ) {
+				WP_CLI::warning( '... e mais ' . ( count( $soltas ) - 10 ) . ' linha(s).' );
+			}
+			if ( ! $simular ) {
+				WP_CLI::error( count( $soltas ) . ' linha(s) do plano-fatos sem mês atribuível: nada foi gravado. Corrija o arquivo (ou use --simular para ver o resto).' );
+			}
+		}
+
+		// Datas das pessoas: por mês, e pré-varredura dos conflitos internos do TSV.
+		$internos = $this->conflitos_internos( $lidas['linhas'] );
+		$por_mes  = array();
+		foreach ( $lidas['linhas'] as $linha ) {
+			$por_mes[ $linha['mes'] ][] = $linha;
+		}
+
+		$this->datas_vistas = array();
+
+		// Garante os termos (idempotente). Na simulação não grava nada.
+		if ( ! $simular ) {
+			hbv_seed_terms();
+		}
+
+		$relatorio          = null;
+		$relatorio_pessoas  = null;
+		$caminho_relatorio  = '';
+		$caminho_pessoas    = '';
+		if ( ! $simular ) {
+			$caminho_relatorio = $this->abrir_relatorio( $lote, $relatorio, self::CABECALHO_MESES );
+			$caminho_pessoas   = $this->abrir_relatorio( $lote . '-pessoas', $relatorio_pessoas, self::CABECALHO_PESSOAS );
+		}
+
+		$c = array(
+			'meses'      => 0,
+			'fatos'      => 0,
+			'datas'      => 0,
+			'iguais'     => 0,
+			'conflitos'  => 0,
+			'sem_bio'    => 0,
+			'invalidas'  => 0,
+			'puladas'    => 0,
+			'recusadas'  => 0,
+		);
+		$motivos  = array();
+		$exemplos = array();
+		$recontar = array();
+
+		// Linhas do TSV recusadas na leitura.
+		foreach ( $lidas['invalidas'] as $inv ) {
+			$c['invalidas']++;
+			$motivos[ 'datas-pessoas: ' . $inv['motivo'] ] = ( isset( $motivos[ 'datas-pessoas: ' . $inv['motivo'] ] ) ? $motivos[ 'datas-pessoas: ' . $inv['motivo'] ] : 0 ) + 1;
+			if ( $relatorio_pessoas ) {
+				$this->escrever_linha( $relatorio_pessoas, array( '', '', '', '', '', '', 'linha_invalida', 'linha ' . $inv['linha'] . ': ' . $inv['motivo'] ) );
+			}
+		}
+
+		wp_defer_term_counting( true );
+		try {
+			for ( $n = 1; $n <= 12; $n++ ) {
+				$mes     = isset( $meses[ $n ] ) ? $meses[ $n ] : null;
+				$pagina  = is_array( $mes ) ? $mes['id'] : 0;
+				$fatos   = isset( $fatos_da_pagina[ $pagina ] ) ? $fatos_da_pagina[ $pagina ] : array();
+				$invalid = isset( $invalidas_do_mes[ $n ] ) ? $invalidas_do_mes[ $n ] : array();
+				$pessoas = isset( $por_mes[ $n ] ) ? $por_mes[ $n ] : array();
+
+				$r = $this->processar_mes( $n, $mes, $fatos, $invalid, $pessoas, $internos, $lote, $simular, $recontar );
+
+				switch ( $r['resultado'] ) {
+					case 'dividido':
+						$c['meses']++;
+						$c['fatos']     += $r['fatos'];
+						$c['datas']     += $r['gravadas'];
+						$c['iguais']    += $r['iguais'];
+						$c['conflitos'] += $r['conflitos'];
+						$c['sem_bio']   += $r['sem_bio'];
+						$c['invalidas'] += $r['invalidas'];
+						break;
+					case 'pulado':
+						$c['puladas']++;
+						break;
+					default:
+						$c['recusadas']++;
+				}
+				if ( '' !== $r['motivo'] ) {
+					$motivos[ $r['motivo'] ] = ( isset( $motivos[ $r['motivo'] ] ) ? $motivos[ $r['motivo'] ] : 0 ) + 1;
+				}
+				foreach ( $r['exemplos'] as $exemplo ) {
+					if ( count( $exemplos ) < self::EXEMPLOS ) {
+						$exemplos[] = $exemplo;
+					}
+				}
+
+				if ( $simular ) {
+					if ( 'dividido' === $r['resultado'] ) {
+						WP_CLI::log(
+							sprintf(
+								'Mês %02d (%s): fatos a criar %d; datas a gravar %d; já iguais %d; conflitos %d; sem biografia %d; pessoas inválidas %d.',
+								$n,
+								$r['slug'],
+								$r['fatos'],
+								$r['gravadas'],
+								$r['iguais'],
+								$r['conflitos'],
+								$r['sem_bio'],
+								$r['invalidas']
+							)
+						);
+					} else {
+						WP_CLI::log( sprintf( 'Mês %02d (%s): %s - %s', $n, $r['slug'], $r['resultado'], $r['motivo'] ) );
+					}
+				}
+
+				if ( $relatorio ) {
+					$this->escrever_linha(
+						$relatorio,
+						array( $n, $pagina, $r['slug'], $r['fatos'], implode( ',', $r['ids'] ), $r['gravadas'], $r['iguais'], $r['conflitos'], $r['sem_bio'], $r['antigo'], $r['destino'], $r['resultado'], $r['motivo'] )
+					);
+				}
+				if ( $relatorio_pessoas ) {
+					foreach ( $r['pessoas'] as $linha_pessoa ) {
+						$this->escrever_linha( $relatorio_pessoas, $linha_pessoa );
+					}
+				}
+				$this->limpar_memoria();
+			}
+
+			if ( ! $simular ) {
+				$this->recontar_termos_antigos( $recontar );
+			}
+		} finally {
+			wp_defer_term_counting( false );
+			if ( $relatorio ) {
+				fclose( $relatorio );
+			}
+			if ( $relatorio_pessoas ) {
+				fclose( $relatorio_pessoas );
+			}
+		}
+
+		$this->imprimir_resumo_meses( $c, $motivos, $exemplos, $simular );
+
+		if ( $simular ) {
+			WP_CLI::success( 'Simulação concluída: nada foi gravado.' );
+			return;
+		}
+
+		WP_CLI::log( 'Relatório: ' . $caminho_relatorio );
+		WP_CLI::log( 'Conflitos e pessoas sem biografia: ' . $caminho_pessoas );
 		WP_CLI::success( 'Lote "' . $lote . '" concluído. Para voltar: wp hbv migracao desfazer --lote=' . $lote );
 	}
 
@@ -1356,8 +1729,9 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 	 *
 	 * @param string $arquivo Caminho do arquivo.
 	 * @param string $rotulo  Nome do plano nas mensagens.
-	 * @param string $tipo    "autor" (plano-autores) ou "obra" (plano-obras).
-	 * @return array array( 'linhas' => array( array( 'linha' => int, 'dados' => array ) ), 'invalidas' => array( array( 'linha' => int, 'motivo' => string ) ) ).
+	 * @param string $tipo    "autor" (plano-autores), "obra" (plano-obras) ou "fato" (plano-fatos).
+	 * @return array array( 'linhas' => array( array( 'linha' => int, 'dados' => array ) ), 'invalidas' => array( array( 'linha' => int, 'motivo' => string, 'id_pagina' => int ) ) ).
+	 *               "id_pagina" só vem nas linhas que passaram pelo JSON mas falharam na validação (-1 se não é um id).
 	 */
 	private function ler_jsonl( $arquivo, $rotulo, $tipo ) {
 		$fh = fopen( $arquivo, 'rb' );
@@ -1395,11 +1769,18 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 				continue;
 			}
 
-			$validada = ( 'autor' === $tipo ) ? $this->validar_autor( $d ) : $this->validar_obra( $d );
+			if ( 'autor' === $tipo ) {
+				$validada = $this->validar_autor( $d );
+			} elseif ( 'fato' === $tipo ) {
+				$validada = $this->validar_fato( $d );
+			} else {
+				$validada = $this->validar_obra( $d );
+			}
 			if ( is_string( $validada ) ) {
 				$invalidas[] = array(
-					'linha'  => $numero,
-					'motivo' => $validada,
+					'linha'     => $numero,
+					'motivo'    => $validada,
+					'id_pagina' => $this->inteiro( isset( $d['id_pagina'] ) ? $d['id_pagina'] : null ),
 				);
 				continue;
 			}
@@ -2282,30 +2663,48 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 	 */
 	private function reverter_registro( $id, $dados, &$recontar ) {
 		if ( 'criada' === $dados['acao'] ) {
-			return $this->reverter_obra( $id );
+			return $this->reverter_criada( $id, $dados['tipo_post'], $recontar );
 		}
 		if ( 'dividida' === $dados['acao'] ) {
+			if ( 'mes' === $dados['subtipo'] ) {
+				return $this->reverter_mes( $id, $dados, $recontar );
+			}
 			return $this->reverter_pagina( $id, $dados, $recontar );
 		}
 		return $this->reverter_post( $id, $dados, $recontar );
 	}
 
 	/**
-	 * Apaga uma obra criada pelo comando "obras" (definitivamente; a capa, um anexo, fica).
+	 * Apaga uma obra (comando "obras") ou um fato (comando "meses") criado pelo migrador.
 	 *
-	 * @param int $id ID da obra.
+	 * Definitivo; a capa da obra, um anexo, fica. No fato, guarda o termo de tema para recontar.
+	 *
+	 * @param int    $id       ID do post.
+	 * @param string $tipo     hbv_obra ou hbv_fato.
+	 * @param array  $recontar Acumula termos a recontar (por referência).
 	 * @return string Aviso (vazio se tudo certo).
 	 */
-	private function reverter_obra( $id ) {
+	private function reverter_criada( $id, $tipo, &$recontar ) {
 		$post = get_post( $id );
 		if ( ! $post ) {
-			return 'obra não existe mais.';
+			return 'item não existe mais.';
 		}
-		if ( 'hbv_obra' !== $post->post_type ) {
-			return 'tipo atual "' . $post->post_type . '" não é hbv_obra; não apagado.';
+		if ( $tipo !== $post->post_type ) {
+			return 'tipo atual "' . $post->post_type . '" não é ' . $tipo . '; não apagado.';
 		}
+
+		// A contagem de hbv_tema muda quando o fato some: recontada ao fim do desfazer.
+		if ( 'hbv_fato' === $tipo ) {
+			$ids = wp_get_object_terms( $id, 'hbv_tema', array( 'fields' => 'tt_ids' ) );
+			if ( ! is_wp_error( $ids ) ) {
+				foreach ( $ids as $tt_id ) {
+					$recontar['hbv_tema'][ (int) $tt_id ] = (int) $tt_id;
+				}
+			}
+		}
+
 		if ( ! wp_delete_post( $id, true ) ) {
-			return 'falha ao apagar a obra.';
+			return 'falha ao apagar o item.';
 		}
 		return '';
 	}
@@ -2378,6 +2777,996 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 			return 'falha ao apagar o termo "' . $termo->name . '".';
 		}
 		return '';
+	}
+
+	/* ---------- Meses: leitura dos arquivos ---------- */
+
+	/**
+	 * Lê e valida o meses.json (chaves "1" a "12").
+	 *
+	 * @param string $arquivo Caminho do arquivo.
+	 * @return array Mês (1 a 12) => array( id, slug, titulo, abertura, bibliografia ), ou o motivo (texto)
+	 *               se o mês é inválido, ou null se a chave não existe.
+	 */
+	private function ler_meses( $arquivo ) {
+		$json = file_get_contents( $arquivo );
+		if ( false === $json ) {
+			WP_CLI::error( 'Não foi possível ler: ' . $arquivo );
+		}
+		$json = preg_replace( '/^\xEF\xBB\xBF/', '', $json );
+		$d    = json_decode( $json, true );
+		if ( JSON_ERROR_NONE !== json_last_error() || ! is_array( $d ) ) {
+			WP_CLI::error( 'meses.json inválido (' . json_last_error_msg() . '): ' . $arquivo );
+		}
+
+		$saida = array();
+		$ids   = array();
+		for ( $n = 1; $n <= 12; $n++ ) {
+			if ( ! isset( $d[ $n ] ) ) {
+				$saida[ $n ] = null;
+				continue;
+			}
+			$m = $d[ $n ];
+			if ( ! is_array( $m ) ) {
+				$saida[ $n ] = 'meses.json: o mês ' . $n . ' não é um objeto';
+				continue;
+			}
+
+			$id = $this->inteiro( isset( $m['id_pagina'] ) ? $m['id_pagina'] : null );
+			if ( $id < 1 ) {
+				$saida[ $n ] = 'meses.json: mês ' . $n . ': id_pagina inválido';
+				continue;
+			}
+			if ( isset( $ids[ $id ] ) ) {
+				$saida[ $n ] = 'meses.json: mês ' . $n . ': id_pagina ' . $id . ' repetido (mês ' . $ids[ $id ] . ')';
+				continue;
+			}
+			$slug = $this->texto( isset( $m['slug'] ) ? $m['slug'] : null );
+			if ( '' === $slug ) {
+				$saida[ $n ] = 'meses.json: mês ' . $n . ': slug vazio';
+				continue;
+			}
+			if ( ! isset( $m['abertura_html'] ) || ! is_string( $m['abertura_html'] ) ) {
+				$saida[ $n ] = 'meses.json: mês ' . $n . ': abertura_html ausente';
+				continue;
+			}
+			if ( ! isset( $m['bibliografia'] ) || ! is_array( $m['bibliografia'] ) ) {
+				$saida[ $n ] = 'meses.json: mês ' . $n . ': bibliografia ausente';
+				continue;
+			}
+			$biblio = array();
+			foreach ( $m['bibliografia'] as $item ) {
+				$texto = $this->texto( $item );
+				if ( '' !== $texto ) {
+					$biblio[] = $texto;
+				}
+			}
+
+			$ids[ $id ]  = $n;
+			$saida[ $n ] = array(
+				'id'           => $id,
+				'slug'         => $slug,
+				'titulo'       => $this->texto( isset( $m['titulo'] ) ? $m['titulo'] : null ),
+				'abertura'     => $m['abertura_html'],
+				'bibliografia' => $biblio,
+			);
+		}
+
+		return $saida;
+	}
+
+	/**
+	 * Valida e normaliza uma linha do plano-fatos.
+	 *
+	 * @param array $d Objeto decodificado.
+	 * @return array|string Linha normalizada ou o motivo da recusa.
+	 */
+	private function validar_fato( $d ) {
+		$id = $this->inteiro( isset( $d['id_pagina'] ) ? $d['id_pagina'] : null );
+		if ( $id < 1 ) {
+			return 'id_pagina inválido';
+		}
+		$mes = $this->inteiro( isset( $d['mes'] ) ? $d['mes'] : null );
+		if ( $mes < 1 || $mes > 12 ) {
+			return 'mes inválido';
+		}
+
+		$dia = null;
+		if ( isset( $d['dia'] ) ) {
+			$dia = $this->inteiro( $d['dia'] );
+			if ( $dia < 1 || $dia > 31 || ! checkdate( $mes, $dia, 2000 ) ) {
+				return 'dia inválido (' . $dia . '/' . $mes . ')';
+			}
+		}
+		$ano = null;
+		if ( isset( $d['ano'] ) ) {
+			$ano = $this->inteiro( $d['ano'] );
+			if ( $ano < 1500 || $ano > 2200 ) {
+				return 'ano fora de 1500 a 2200';
+			}
+		}
+
+		$ordem = $this->inteiro( isset( $d['ordem'] ) ? $d['ordem'] : null );
+		if ( $ordem < 0 ) {
+			return 'ordem inválida';
+		}
+		$titulo = $this->texto( isset( $d['titulo'] ) ? $d['titulo'] : null );
+		if ( '' === $titulo ) {
+			return 'titulo vazio';
+		}
+		if ( ! isset( $d['conteudo_html'] ) || ! is_string( $d['conteudo_html'] ) || '' === trim( $d['conteudo_html'] ) ) {
+			return 'conteudo_html vazio';
+		}
+		$tema = $this->texto( isset( $d['tema'] ) ? $d['tema'] : null );
+		if ( '' === $tema ) {
+			return 'tema vazio';
+		}
+		$grupo = $this->texto( isset( $d['grupo'] ) ? $d['grupo'] : null );
+		if ( ! in_array( $grupo, array( 'dia', 'mes' ), true ) ) {
+			return 'grupo desconhecido: ' . $grupo;
+		}
+		if ( isset( $d['fontes'] ) && ! is_array( $d['fontes'] ) ) {
+			return 'fontes não é uma lista';
+		}
+
+		$fontes = array();
+		if ( isset( $d['fontes'] ) ) {
+			foreach ( $d['fontes'] as $fonte ) {
+				$texto = $this->texto( $fonte );
+				if ( '' !== $texto ) {
+					$fontes[] = $texto;
+				}
+			}
+		}
+
+		return array(
+			'id'            => $id,
+			'mes'           => $mes,
+			'dia'           => $dia,
+			'ano'           => $ano,
+			'ordem'         => $ordem,
+			'titulo'        => $titulo,
+			'conteudo_html' => $d['conteudo_html'],
+			'tema'          => $tema,
+			'fontes'        => $fontes,
+		);
+	}
+
+	/**
+	 * Lê e valida o datas-pessoas-casadas.tsv (id, mes, dia, tipo, como, slug, nome).
+	 *
+	 * @param string $arquivo Caminho do arquivo.
+	 * @return array array( 'linhas' => array, 'invalidas' => array( array( 'linha' => int, 'motivo' => string ) ) ).
+	 *               Cada linha: id (0 = sem biografia), mes, dia, tipo, como, slug, nome, linha.
+	 */
+	private function ler_datas_pessoas( $arquivo ) {
+		$esperado = array( 'id', 'mes', 'dia', 'tipo', 'como', 'slug', 'nome' );
+
+		$fh = fopen( $arquivo, 'rb' );
+		if ( ! $fh ) {
+			WP_CLI::error( 'Não foi possível abrir o arquivo: ' . $arquivo );
+		}
+
+		// Tabulação como delimitador; enclosure "\0" para não tratar aspas (os nomes podem ter aspas).
+		$cabecalho = fgetcsv( $fh, 0, "\t", "\0", '\\' );
+		if ( false === $cabecalho ) {
+			fclose( $fh );
+			WP_CLI::error( 'Arquivo vazio: ' . $arquivo );
+		}
+		if ( isset( $cabecalho[0] ) ) {
+			$cabecalho[0] = preg_replace( '/^\xEF\xBB\xBF/', '', (string) $cabecalho[0] );
+		}
+		if ( array_map( 'trim', array_values( $cabecalho ) ) !== $esperado ) {
+			fclose( $fh );
+			WP_CLI::error( 'Cabeçalho inválido em ' . $arquivo . '. Esperado: ' . implode( "\t", $esperado ) );
+		}
+
+		$linhas    = array();
+		$invalidas = array();
+		$numero    = 1;
+
+		while ( false !== ( $campos = fgetcsv( $fh, 0, "\t", "\0", '\\' ) ) ) {
+			$numero++;
+
+			if ( array( null ) === $campos ) {
+				continue;
+			}
+			if ( count( $campos ) !== count( $esperado ) ) {
+				$invalidas[] = array(
+					'linha'  => $numero,
+					'motivo' => 'número de colunas errado (' . count( $campos ) . ' em vez de ' . count( $esperado ) . ')',
+				);
+				continue;
+			}
+
+			$l = array_combine( $esperado, array_map( 'trim', $campos ) );
+
+			if ( '' !== $l['id'] && ( ! ctype_digit( $l['id'] ) || (int) $l['id'] < 1 ) ) {
+				$invalidas[] = array(
+					'linha'  => $numero,
+					'motivo' => 'id inválido',
+				);
+				continue;
+			}
+			if ( ! ctype_digit( $l['mes'] ) || ! ctype_digit( $l['dia'] ) || (int) $l['mes'] < 1 || (int) $l['mes'] > 12
+				|| ! checkdate( (int) $l['mes'], (int) $l['dia'], 2000 ) ) {
+				$invalidas[] = array(
+					'linha'  => $numero,
+					'motivo' => 'data inválida (dia "' . $l['dia'] . '", mês "' . $l['mes'] . '")',
+				);
+				continue;
+			}
+			if ( ! in_array( $l['tipo'], array( 'nascimento', 'falecimento' ), true ) ) {
+				$invalidas[] = array(
+					'linha'  => $numero,
+					'motivo' => 'tipo desconhecido: ' . $l['tipo'],
+				);
+				continue;
+			}
+
+			$l['id']    = ( '' === $l['id'] ) ? 0 : (int) $l['id'];
+			$l['mes']   = (int) $l['mes'];
+			$l['dia']   = (int) $l['dia'];
+			$l['linha'] = $numero;
+			$linhas[]   = $l;
+		}
+		fclose( $fh );
+
+		return array(
+			'linhas'    => $linhas,
+			'invalidas' => $invalidas,
+		);
+	}
+
+	/**
+	 * Pessoa e tipo com datas diferentes no próprio TSV (em qualquer mês).
+	 *
+	 * @param array $linhas Linhas válidas do TSV.
+	 * @return array "id|tipo" => lista de datas "dd/mm" (só os que têm mais de uma).
+	 */
+	private function conflitos_internos( $linhas ) {
+		$datas = array();
+		foreach ( $linhas as $l ) {
+			if ( $l['id'] < 1 ) {
+				continue;
+			}
+			$datas[ $l['id'] . '|' . $l['tipo'] ][ $this->formatar_data( $l['dia'], $l['mes'] ) ] = true;
+		}
+
+		$internos = array();
+		foreach ( $datas as $chave => $lista ) {
+			if ( count( $lista ) > 1 ) {
+				$internos[ $chave ] = array_keys( $lista );
+			}
+		}
+		return $internos;
+	}
+
+	/**
+	 * Formata dia e mês como "dd/mm" ("--" quando falta).
+	 *
+	 * @param int $dia Dia (0 = vazio).
+	 * @param int $mes Mês (0 = vazio).
+	 * @return string
+	 */
+	private function formatar_data( $dia, $mes ) {
+		return ( $dia > 0 ? sprintf( '%02d', $dia ) : '--' ) . '/' . ( $mes > 0 ? sprintf( '%02d', $mes ) : '--' );
+	}
+
+	/* ---------- Meses: um mês ---------- */
+
+	/**
+	 * Processa um mês.
+	 *
+	 * @param int         $n        Número do mês (1 a 12).
+	 * @param array|mixed $mes      Mês validado de meses.json, texto com o motivo se inválido, ou null.
+	 * @param array       $fatos    Fatos do mês, em ordem.
+	 * @param string[]    $invalidas Linhas inválidas do plano-fatos atribuídas a este mês.
+	 * @param array       $pessoas  Linhas do TSV com este mês.
+	 * @param array       $internos Conflitos internos do TSV.
+	 * @param string      $lote     Nome do lote.
+	 * @param bool        $simular  Se true, não grava.
+	 * @param array       $recontar Acumula termos a recontar (por referência).
+	 * @return array Resultado: dividido, pulado ou recusado, com contagens e linhas do relatório de pessoas.
+	 */
+	private function processar_mes( $n, $mes, $fatos, $invalidas, $pessoas, $internos, $lote, $simular, &$recontar ) {
+		$saida = array(
+			'resultado' => 'recusado',
+			'motivo'    => '',
+			'slug'      => is_array( $mes ) ? $mes['slug'] : '',
+			'fatos'     => 0,
+			'ids'       => array(),
+			'gravadas'  => 0,
+			'iguais'    => 0,
+			'conflitos' => 0,
+			'sem_bio'   => 0,
+			'invalidas' => 0,
+			'pessoas'   => array(),
+			'antigo'    => '',
+			'destino'   => '',
+			'exemplos'  => array(),
+		);
+
+		if ( ! is_array( $mes ) ) {
+			$saida['motivo'] = is_string( $mes ) ? $mes : 'mês ' . $n . ' ausente em meses.json';
+			return $saida;
+		}
+
+		$id   = $mes['id'];
+		$post = get_post( $id );
+		if ( ! $post ) {
+			$saida['motivo'] = 'página ' . $id . ' não existe';
+			return $saida;
+		}
+
+		// Página já dividida (por este ou outro lote): pulada.
+		$bruto = (string) get_post_meta( $id, self::META_REGISTRO, true );
+		if ( '' !== $bruto ) {
+			$anterior = $this->decodificar_registro( $bruto );
+			if ( $anterior && 'dividida' === $anterior['acao'] ) {
+				$saida['resultado'] = 'pulado';
+				$saida['motivo']    = 'página já dividida (lote "' . $anterior['lote'] . '"); para refazer, desfaça o lote';
+			} else {
+				$saida['motivo'] = 'a página já tem registro _hbv_migracao (' . ( $anterior ? 'outra conversão' : 'ilegível' ) . '); não tocada';
+			}
+			return $saida;
+		}
+
+		if ( 'post' !== $post->post_type ) {
+			$saida['motivo'] = 'post_type atual é "' . $post->post_type . '", não "post"';
+			return $saida;
+		}
+		if ( 'publish' !== $post->post_status ) {
+			$saida['motivo'] = 'post_status é "' . $post->post_status . '", não "publish"';
+			return $saida;
+		}
+		if ( $post->post_name !== $mes['slug'] ) {
+			$saida['motivo'] = 'slug mudou (arquivos velhos): no banco "' . $post->post_name . '", em meses.json "' . $mes['slug'] . '"';
+			return $saida;
+		}
+
+		if ( $invalidas ) {
+			$saida['motivo'] = 'plano-fatos com linha(s) inválida(s) deste mês (' . implode( '; ', array_slice( $invalidas, 0, 3 ) ) . ( count( $invalidas ) > 3 ? '; ...' : '' ) . ')';
+			return $saida;
+		}
+
+		// Conferência dos fatos e dos termos antes de gravar qualquer coisa.
+		foreach ( $fatos as $f ) {
+			if ( $f['mes'] !== $n ) {
+				$saida['motivo'] = 'fato da linha ' . $f['linha'] . ' do plano-fatos tem mes ' . $f['mes'] . ', não ' . $n;
+				return $saida;
+			}
+			if ( 0 === $this->resolver_termo( 'hbv_tema', $f['tema'], $simular ) ) {
+				$saida['motivo'] = 'termo inexistente: hbv_tema/' . $f['tema'] . ' (linha ' . $f['linha'] . ' do plano-fatos)';
+				return $saida;
+			}
+		}
+
+		// Destinos e opções: nada pode já existir (o desfazer não saberia restaurar).
+		$antigo  = hbv_core_remover_instalacao( hbv_core_normalizar_caminho( wp_make_link_relative( (string) get_permalink( $post ) ) ) );
+		$destino = $this->destino_mes( $n );
+		if ( '' === $destino ) {
+			$saida['motivo'] = 'o arquivo de hbv_fato não tem endereço (tipo não registrado?)';
+			return $saida;
+		}
+		$opcao_meses = get_option( self::OPCAO_MESES, array() );
+		if ( is_array( $opcao_meses ) && isset( $opcao_meses[ $n ] ) ) {
+			$saida['motivo'] = 'a option ' . self::OPCAO_MESES . ' já tem o mês ' . $n . '; remova-o ou desfaça o lote que o gravou';
+			return $saida;
+		}
+		$opcao_fixos = get_option( self::OPCAO_CAMINHOS, array() );
+		if ( is_array( $opcao_fixos ) && isset( $opcao_fixos[ $antigo ] ) ) {
+			$saida['motivo'] = 'a option ' . self::OPCAO_CAMINHOS . ' já tem o caminho ' . $antigo . '; remova-o ou desfaça o lote que o gravou';
+			return $saida;
+		}
+
+		$saida['antigo']  = $antigo;
+		$saida['destino'] = $destino;
+
+		// Datas das pessoas (só leitura; a gravação vem depois dos fatos).
+		$plano    = $this->planejar_pessoas( $pessoas, $internos );
+		$contagem = array(
+			'gravar'           => 0,
+			'igual'            => 0,
+			'conflito'         => 0,
+			'conflito_interno' => 0,
+			'sem_biografia'    => 0,
+			'pessoa_invalida'  => 0,
+		);
+		$relatorio_pessoas = array();
+		foreach ( $plano as $item ) {
+			$contagem[ $item['resultado'] ]++;
+			if ( ! in_array( $item['resultado'], array( 'gravar', 'igual' ), true ) ) {
+				$l                   = $item['linha'];
+				$relatorio_pessoas[] = array( $n, $l['id'] > 0 ? $l['id'] : '', $l['nome'], $l['tipo'], $item['atual'], $this->formatar_data( $l['dia'], $l['mes'] ), $item['resultado'], $item['motivo'] );
+			}
+		}
+		$resumo_pessoas = array(
+			'gravadas'  => $contagem['gravar'],
+			'iguais'    => $contagem['igual'],
+			'conflitos' => $contagem['conflito'] + $contagem['conflito_interno'],
+			'sem_bio'   => $contagem['sem_biografia'],
+			'invalidas' => $contagem['pessoa_invalida'],
+			'pessoas'   => $relatorio_pessoas,
+		);
+
+		if ( $simular ) {
+			$saida = array_merge( $saida, $resumo_pessoas );
+			$saida['resultado'] = 'dividido';
+			$saida['fatos']     = count( $fatos );
+			foreach ( array_slice( $fatos, 0, self::EXEMPLOS ) as $f ) {
+				$saida['exemplos'][] = $f['titulo'] . ' | ' . ( null !== $f['dia'] ? sprintf( '%02d', $f['dia'] ) : '--' ) . '/' . sprintf( '%02d', $f['mes'] ) . '/' . ( null !== $f['ano'] ? $f['ano'] : '----' ) . ' | ' . $f['tema'];
+			}
+			return $saida;
+		}
+
+		// Termos antigos (categorias, etiquetas) cuja contagem muda quando a página sai de "publicado".
+		$this->acumular_termos_antigos( $id, $recontar );
+
+		$feito = array(
+			'fatos'    => array(),
+			'pessoas'  => array(),
+			'registro' => false,
+		);
+
+		// 1) Fatos, na ordem.
+		foreach ( $fatos as $f ) {
+			$erro = '';
+			$fid  = $this->criar_fato( $f, $post, $lote, $erro );
+			if ( $fid < 1 ) {
+				$this->reverter_mes_parcial( $feito, $lote, $n, $id, $antigo, $destino );
+				$saida['motivo'] = 'falha ao criar o fato "' . $f['titulo'] . '": ' . $erro . ' (mês não alterado)';
+				return $saida;
+			}
+			$feito['fatos'][] = $fid;
+		}
+
+		// 2) Datas das pessoas.
+		foreach ( $plano as $item ) {
+			if ( 'gravar' !== $item['resultado'] ) {
+				continue;
+			}
+			$erro = $this->gravar_datas_pessoa( $item['linha']['id'], $item['campos'], $lote );
+			if ( '' !== $erro ) {
+				$this->reverter_mes_parcial( $feito, $lote, $n, $id, $antigo, $destino );
+				$saida['motivo'] = 'falha ao gravar datas da pessoa ' . $item['linha']['id'] . ': ' . $erro . ' (mês não alterado)';
+				return $saida;
+			}
+			$feito['pessoas'][ $item['linha']['id'] ] = true;
+		}
+
+		// 3) Texto do mês e 4) caminho fixo.
+		$erro = $this->gravar_opcoes_mes( $n, $mes, $lote, $antigo, $destino );
+		if ( '' !== $erro ) {
+			$this->reverter_mes_parcial( $feito, $lote, $n, $id, $antigo, $destino );
+			$saida['motivo'] = $erro . ' (mês não alterado)';
+			return $saida;
+		}
+
+		// 5) Registro na página e página para rascunho.
+		$registro = array(
+			'lote'            => $lote,
+			'data'            => gmdate( 'Y-m-d\TH:i:s\Z' ),
+			'acao'            => 'dividida',
+			'mes'             => $n,
+			'status_anterior' => $post->post_status,
+			'caminho_antigo'  => $antigo,
+			'destino'         => $destino,
+			'fatos'           => $feito['fatos'],
+		);
+		update_post_meta( $id, self::META_REGISTRO, wp_slash( wp_json_encode( $registro ) ) );
+		$feito['registro'] = true;
+
+		$erro = '';
+		if ( ! $this->mudar_status( $id, 'draft', $erro ) ) {
+			$this->reverter_mes_parcial( $feito, $lote, $n, $id, $antigo, $destino );
+			$saida['motivo'] = 'falha ao passar a página para rascunho: ' . $erro . ' (mês não alterado)';
+			return $saida;
+		}
+
+		clean_post_cache( $id );
+		$saida = array_merge( $saida, $resumo_pessoas );
+		$saida['resultado'] = 'dividido';
+		$saida['fatos']     = count( $feito['fatos'] );
+		$saida['ids']       = $feito['fatos'];
+		return $saida;
+	}
+
+	/**
+	 * Endereço do mês no arquivo de fatos, relativo à home (ex.: /datas-e-fatos/?hbv_mes=1).
+	 *
+	 * @param int $n Número do mês.
+	 * @return string Vazio se o arquivo do tipo não tem endereço.
+	 */
+	private function destino_mes( $n ) {
+		$arquivo = get_post_type_archive_link( 'hbv_fato' );
+		if ( ! $arquivo ) {
+			return '';
+		}
+		$url  = add_query_arg( 'hbv_mes', (int) $n, $arquivo );
+		$home = untrailingslashit( home_url() );
+		if ( 0 !== strpos( $url, $home ) ) {
+			return '';
+		}
+		$relativo = substr( $url, strlen( $home ) );
+		if ( '' === $relativo || '/' !== $relativo[0] ) {
+			$relativo = '/' . $relativo;
+		}
+		return $relativo;
+	}
+
+	/**
+	 * Decide o que fazer com cada linha de datas do mês (só leitura).
+	 *
+	 * Resultados: gravar, igual, conflito (a ficha tem outra data), conflito_interno
+	 * (o TSV traz duas datas para a mesma pessoa e tipo), sem_biografia (id vazio) e
+	 * pessoa_invalida (id que não é hbv_pessoa publicada, ou registro ilegível).
+	 * Dia e mês são tratados juntos: se um dos dois campos já tem valor diferente, é
+	 * conflito e nada é gravado; campos vazios são preenchidos; campos iguais ficam.
+	 *
+	 * @param array $linhas   Linhas do TSV do mês.
+	 * @param array $internos Conflitos internos do TSV.
+	 * @return array Lista de array( linha, resultado, motivo, atual, campos ).
+	 */
+	private function planejar_pessoas( $linhas, $internos ) {
+		$itens = array();
+
+		foreach ( $linhas as $l ) {
+			$item = array(
+				'linha'     => $l,
+				'resultado' => '',
+				'motivo'    => '',
+				'atual'     => '',
+				'campos'    => array(),
+			);
+
+			if ( $l['id'] < 1 ) {
+				$item['resultado'] = 'sem_biografia';
+				$item['motivo']    = 'linha sem id (casamento: ' . $l['como'] . ')';
+				$itens[]           = $item;
+				continue;
+			}
+
+			$chave = $l['id'] . '|' . $l['tipo'];
+			if ( isset( $internos[ $chave ] ) ) {
+				$item['resultado'] = 'conflito_interno';
+				$item['motivo']    = 'o TSV traz datas diferentes para esta pessoa e tipo: ' . implode( ', ', $internos[ $chave ] );
+				$itens[]           = $item;
+				continue;
+			}
+
+			$post = get_post( $l['id'] );
+			if ( ! $post || 'hbv_pessoa' !== $post->post_type || 'publish' !== $post->post_status ) {
+				$item['resultado'] = 'pessoa_invalida';
+				$item['motivo']    = ! $post ? 'o post não existe' : 'o post é "' . $post->post_type . '" (' . $post->post_status . '), não hbv_pessoa publicada';
+				$itens[]           = $item;
+				continue;
+			}
+			$registro = (string) get_post_meta( $l['id'], self::META_DATAS, true );
+			if ( '' !== $registro && ! is_array( json_decode( $registro, true ) ) ) {
+				$item['resultado'] = 'pessoa_invalida';
+				$item['motivo']    = 'registro ' . self::META_DATAS . ' ilegível; corrija antes';
+				$itens[]           = $item;
+				continue;
+			}
+
+			$prefixo = 'hbv_' . $l['tipo'];
+			$novos   = array(
+				$prefixo . '_dia' => $l['dia'],
+				$prefixo . '_mes' => $l['mes'],
+			);
+
+			$atual_dia = (int) get_post_meta( $l['id'], $prefixo . '_dia', true );
+			$atual_mes = (int) get_post_meta( $l['id'], $prefixo . '_mes', true );
+			if ( $atual_dia > 0 || $atual_mes > 0 ) {
+				$item['atual'] = $this->formatar_data( $atual_dia, $atual_mes );
+			}
+
+			// Mesma linha repetida no TSV: a primeira já cuida.
+			if ( isset( $this->datas_vistas[ $chave ] ) ) {
+				$item['resultado'] = 'igual';
+				$item['motivo']    = 'linha repetida no TSV';
+				$itens[]           = $item;
+				continue;
+			}
+
+			$faltam    = array();
+			$diferente = false;
+			foreach ( $novos as $campo => $valor ) {
+				$atual = ( $prefixo . '_dia' === $campo ) ? $atual_dia : $atual_mes;
+				if ( 0 === $atual ) {
+					$faltam[ $campo ] = $valor;
+				} elseif ( $atual !== $valor ) {
+					$diferente = true;
+				}
+			}
+
+			if ( $diferente ) {
+				$item['resultado'] = 'conflito';
+				$item['motivo']    = 'a ficha já tem outra data (' . $prefixo . '); não sobrescrita';
+			} elseif ( ! $faltam ) {
+				$item['resultado'] = 'igual';
+			} else {
+				$item['resultado']        = 'gravar';
+				$item['campos']           = $faltam;
+				$this->datas_vistas[ $chave ] = true;
+			}
+			$itens[] = $item;
+		}
+
+		return $itens;
+	}
+
+	/**
+	 * Cria um fato (hbv_fato) com a ficha, o tema e o registro de migração.
+	 *
+	 * @param array   $f      Fato do plano-fatos.
+	 * @param WP_Post $post   Página do mês.
+	 * @param string  $lote   Nome do lote.
+	 * @param string  $erro   Recebe a mensagem de erro (por referência).
+	 * @return int ID do fato; 0 se falhou (nada fica gravado).
+	 */
+	private function criar_fato( $f, $post, $lote, &$erro ) {
+		// HTML do próprio acervo: sem filtros kses (ver criar_obra).
+		$dados = array(
+			'post_type'     => 'hbv_fato',
+			'post_status'   => 'publish',
+			'post_title'    => $f['titulo'],
+			'post_content'  => $f['conteudo_html'],
+			'post_date'     => $post->post_date,
+			'post_date_gmt' => $post->post_date_gmt,
+			'post_author'   => (int) $post->post_author,
+			'menu_order'    => $f['ordem'],
+		);
+		$id = $this->com_kses_desligado(
+			static function () use ( $dados ) {
+				return wp_insert_post( wp_slash( $dados ), true );
+			}
+		);
+		if ( is_wp_error( $id ) ) {
+			$erro = $id->get_error_message();
+			return 0;
+		}
+		if ( (int) $id < 1 ) {
+			$erro = 'wp_insert_post não devolveu um ID';
+			return 0;
+		}
+		$id = (int) $id;
+
+		// Registro logo após criar: se algo falhar daqui em diante, o desfazer enxerga o fato.
+		$registro = array(
+			'lote'   => $lote,
+			'data'   => gmdate( 'Y-m-d\TH:i:s\Z' ),
+			'acao'   => 'criada',
+			'tipo'   => 'hbv_fato',
+			'origem' => $f['id'],
+			'ordem'  => $f['ordem'],
+		);
+		update_post_meta( $id, self::META_REGISTRO, wp_slash( wp_json_encode( $registro ) ) );
+
+		if ( null !== $f['dia'] ) {
+			update_post_meta( $id, 'hbv_dia', $f['dia'] );
+		}
+		update_post_meta( $id, 'hbv_mes', $f['mes'] );
+		if ( null !== $f['ano'] ) {
+			update_post_meta( $id, 'hbv_ano', $f['ano'] );
+		}
+		if ( $f['fontes'] ) {
+			update_post_meta( $id, 'hbv_fontes', wp_slash( implode( "\n", $f['fontes'] ) ) );
+		}
+
+		$res = wp_set_object_terms( $id, $this->resolver_termo( 'hbv_tema', $f['tema'], false ), 'hbv_tema', false );
+		if ( is_wp_error( $res ) ) {
+			$erro = 'termo hbv_tema: ' . $res->get_error_message();
+			wp_delete_post( $id, true );
+			return 0;
+		}
+
+		return $id;
+	}
+
+	/**
+	 * Grava dia e mês de uma pessoa e o que desfazer em _hbv_migracao_datas.
+	 *
+	 * O registro é um JSON por lote: {"<lote>":{"data":"...","campos":{"hbv_nascimento_dia":null,...}}},
+	 * com o valor anterior de cada campo (null = não existia). É gravado antes dos campos.
+	 *
+	 * @param int    $id     ID da pessoa.
+	 * @param array  $campos Meta => valor (só os campos vazios).
+	 * @param string $lote   Nome do lote.
+	 * @return string Erro (vazio se tudo certo).
+	 */
+	private function gravar_datas_pessoa( $id, $campos, $lote ) {
+		$bruto    = (string) get_post_meta( $id, self::META_DATAS, true );
+		$registro = ( '' === $bruto ) ? array() : json_decode( $bruto, true );
+		if ( ! is_array( $registro ) ) {
+			return 'registro ' . self::META_DATAS . ' ilegível';
+		}
+
+		$entrada = ( isset( $registro[ $lote ] ) && is_array( $registro[ $lote ] ) ) ? $registro[ $lote ] : array(
+			'data'   => gmdate( 'Y-m-d\TH:i:s\Z' ),
+			'campos' => array(),
+		);
+		if ( ! isset( $entrada['campos'] ) || ! is_array( $entrada['campos'] ) ) {
+			$entrada['campos'] = array();
+		}
+		foreach ( array_keys( $campos ) as $campo ) {
+			if ( ! array_key_exists( $campo, $entrada['campos'] ) ) {
+				$anterior                  = get_post_meta( $id, $campo, true );
+				$entrada['campos'][ $campo ] = ( '' === $anterior ) ? null : $anterior;
+			}
+		}
+		$registro[ $lote ] = $entrada;
+		update_post_meta( $id, self::META_DATAS, wp_slash( wp_json_encode( $registro ) ) );
+
+		foreach ( $campos as $campo => $valor ) {
+			update_post_meta( $id, $campo, $valor );
+			if ( (int) get_post_meta( $id, $campo, true ) !== (int) $valor ) {
+				return 'falha ao gravar ' . $campo;
+			}
+		}
+		return '';
+	}
+
+	/**
+	 * Devolve os campos de datas de uma pessoa ao que eram antes de um lote.
+	 *
+	 * @param int    $id   ID da pessoa.
+	 * @param string $lote Nome do lote.
+	 * @return string Aviso (vazio se tudo certo).
+	 */
+	private function restaurar_datas_pessoa( $id, $lote ) {
+		$bruto = (string) get_post_meta( $id, self::META_DATAS, true );
+		if ( '' === $bruto ) {
+			return '';
+		}
+		$registro = json_decode( $bruto, true );
+		if ( ! is_array( $registro ) ) {
+			return 'registro ' . self::META_DATAS . ' ilegível; mantido.';
+		}
+		if ( ! isset( $registro[ $lote ] ) ) {
+			return '';
+		}
+
+		$campos = ( is_array( $registro[ $lote ] ) && isset( $registro[ $lote ]['campos'] ) && is_array( $registro[ $lote ]['campos'] ) ) ? $registro[ $lote ]['campos'] : array();
+		foreach ( $campos as $campo => $anterior ) {
+			if ( ! is_string( $campo ) || 0 !== strpos( $campo, 'hbv_' ) ) {
+				continue;
+			}
+			if ( null === $anterior ) {
+				delete_post_meta( $id, $campo );
+			} else {
+				update_post_meta( $id, $campo, $anterior );
+			}
+		}
+
+		unset( $registro[ $lote ] );
+		if ( $registro ) {
+			update_post_meta( $id, self::META_DATAS, wp_slash( wp_json_encode( $registro ) ) );
+		} else {
+			delete_post_meta( $id, self::META_DATAS );
+		}
+		return '';
+	}
+
+	/**
+	 * Grava o texto do mês (hbv_meses) e o caminho fixo (hbv_core_caminhos_fixos).
+	 *
+	 * @param int    $n       Número do mês.
+	 * @param array  $mes     Mês validado de meses.json.
+	 * @param string $lote    Nome do lote.
+	 * @param string $antigo  Caminho antigo (normalizado).
+	 * @param string $destino Destino relativo à home.
+	 * @return string Erro (vazio se tudo certo).
+	 */
+	private function gravar_opcoes_mes( $n, $mes, $lote, $antigo, $destino ) {
+		$meses = get_option( self::OPCAO_MESES, array() );
+		if ( ! is_array( $meses ) ) {
+			$meses = array();
+		}
+		$meses[ $n ] = array(
+			'abertura_html' => wp_kses_post( $mes['abertura'] ),
+			'bibliografia'  => array_map( 'sanitize_text_field', $mes['bibliografia'] ),
+			'lote'          => $lote,
+			'id_pagina'     => $mes['id'],
+		);
+		ksort( $meses );
+		if ( ! update_option( self::OPCAO_MESES, $meses, false ) ) {
+			return 'falha ao gravar a option ' . self::OPCAO_MESES;
+		}
+
+		$fixos = get_option( self::OPCAO_CAMINHOS, array() );
+		if ( ! is_array( $fixos ) ) {
+			$fixos = array();
+		}
+		$fixos[ $antigo ] = $destino;
+		if ( ! update_option( self::OPCAO_CAMINHOS, $fixos, true ) ) {
+			return 'falha ao gravar a option ' . self::OPCAO_CAMINHOS;
+		}
+		return '';
+	}
+
+	/**
+	 * Tira das options as entradas de um mês gravadas por um lote.
+	 *
+	 * hbv_meses: só se o lote da entrada é este. Caminhos fixos: só a chave do caminho
+	 * antigo cujo valor é o destino que o lote gravou. Apaga a option quando fica vazia.
+	 *
+	 * @param int    $n       Número do mês.
+	 * @param string $lote    Nome do lote.
+	 * @param string $antigo  Caminho antigo (chave em hbv_core_caminhos_fixos).
+	 * @param string $destino Destino que o lote gravou para esse caminho.
+	 */
+	private function remover_opcoes_mes( $n, $lote, $antigo, $destino ) {
+		$meses = get_option( self::OPCAO_MESES, array() );
+		if ( is_array( $meses ) && isset( $meses[ $n ] ) && is_array( $meses[ $n ] ) && isset( $meses[ $n ]['lote'] ) && $lote === $meses[ $n ]['lote'] ) {
+			unset( $meses[ $n ] );
+			if ( $meses ) {
+				update_option( self::OPCAO_MESES, $meses, false );
+			} else {
+				delete_option( self::OPCAO_MESES );
+			}
+		}
+
+		$fixos = get_option( self::OPCAO_CAMINHOS, array() );
+		if ( '' !== $antigo && is_array( $fixos ) && isset( $fixos[ $antigo ] ) && $destino === $fixos[ $antigo ] ) {
+			unset( $fixos[ $antigo ] );
+			if ( $fixos ) {
+				update_option( self::OPCAO_CAMINHOS, $fixos, true );
+			} else {
+				delete_option( self::OPCAO_CAMINHOS );
+			}
+		}
+	}
+
+	/**
+	 * Desfaz o que um mês gravou quando ele falha no meio (reversão local).
+	 *
+	 * @param array  $feito  Fatos, pessoas e registro já gravados neste mês.
+	 * @param string $lote   Nome do lote.
+	 * @param int    $n      Número do mês.
+	 * @param int    $id     ID da página do mês.
+	 * @param string $antigo Caminho antigo.
+	 * @param string $destino Destino gravado para o caminho antigo.
+	 */
+	private function reverter_mes_parcial( $feito, $lote, $n, $id, $antigo, $destino ) {
+		foreach ( $feito['fatos'] as $id_fato ) {
+			wp_delete_post( (int) $id_fato, true );
+		}
+		foreach ( array_keys( $feito['pessoas'] ) as $id_pessoa ) {
+			$this->restaurar_datas_pessoa( (int) $id_pessoa, $lote );
+		}
+		$this->remover_opcoes_mes( $n, $lote, $antigo, $destino );
+		if ( $feito['registro'] ) {
+			delete_post_meta( $id, self::META_REGISTRO );
+		}
+	}
+
+	/**
+	 * Devolve uma página de mês ao status anterior e tira dela, das options e dos caminhos o que o lote gravou.
+	 *
+	 * @param int   $id       ID da página.
+	 * @param array $dados    Registro decodificado.
+	 * @param array $recontar Acumula termos antigos a recontar (por referência).
+	 * @return string Aviso (vazio se tudo certo).
+	 */
+	private function reverter_mes( $id, $dados, &$recontar ) {
+		$post = get_post( $id );
+		if ( ! $post ) {
+			return 'página não existe mais.';
+		}
+
+		$aviso = '';
+		if ( $post->post_status !== $dados['status_anterior'] ) {
+			if ( 'draft' === $post->post_status ) {
+				$erro = '';
+				if ( ! $this->mudar_status( $id, $dados['status_anterior'], $erro ) ) {
+					return 'falha ao devolver o status "' . $dados['status_anterior'] . '": ' . $erro . ' (registro mantido).';
+				}
+			} else {
+				$aviso = 'status atual "' . $post->post_status . '" difere do registrado ("draft"); status não revertido.';
+			}
+		}
+
+		$this->remover_opcoes_mes( $dados['mes'], $dados['lote'], $dados['caminho_antigo'], $dados['destino'] );
+
+		delete_post_meta( $id, self::META_REGISTRO );
+
+		$this->acumular_termos_antigos( $id, $recontar );
+		clean_post_cache( $id );
+
+		return $aviso;
+	}
+
+	/**
+	 * Imprime o resumo do comando "meses".
+	 *
+	 * @param array $c        Contadores.
+	 * @param array $motivos  Motivos => contagem.
+	 * @param array $exemplos Exemplos de fatos (simulação).
+	 * @param bool  $simular  Se é simulação.
+	 */
+	private function imprimir_resumo_meses( $c, $motivos, $exemplos, $simular ) {
+		$coluna = $simular ? 'simulado' : 'gravado';
+		$linhas = array(
+			array( 'resultado' => 'meses divididos', $coluna => $c['meses'] ),
+			array( 'resultado' => 'fatos criados', $coluna => $c['fatos'] ),
+			array( 'resultado' => 'datas gravadas', $coluna => $c['datas'] ),
+			array( 'resultado' => 'datas já iguais', $coluna => $c['iguais'] ),
+			array( 'resultado' => 'conflitos (só no relatório)', $coluna => $c['conflitos'] ),
+			array( 'resultado' => 'sem biografia', $coluna => $c['sem_bio'] ),
+			array( 'resultado' => 'linhas inválidas e pessoas inválidas', $coluna => $c['invalidas'] ),
+			array( 'resultado' => 'meses pulados (já divididos)', $coluna => $c['puladas'] ),
+			array( 'resultado' => 'meses recusados', $coluna => $c['recusadas'] ),
+		);
+		\WP_CLI\Utils\format_items( 'table', $linhas, array( 'resultado', $coluna ) );
+
+		if ( $motivos ) {
+			arsort( $motivos );
+			WP_CLI::log( "\nMotivos (recusados, pulados e linhas inválidas):" );
+			foreach ( $motivos as $motivo => $qtd ) {
+				WP_CLI::log( sprintf( '  %5d  %s', $qtd, $motivo ) );
+			}
+		}
+
+		if ( $simular && $exemplos ) {
+			WP_CLI::log( "\nExemplos de fatos (título | dia/mês/ano | tema):" );
+			foreach ( $exemplos as $exemplo ) {
+				WP_CLI::log( '    ' . $exemplo );
+			}
+		}
+	}
+
+	/**
+	 * Percorre os registros _hbv_migracao_datas das biografias em blocos (por post_id crescente).
+	 *
+	 * Gerador: cada bloco é post_id => array( lote => entrada ) (ou null se ilegível). Com
+	 * $lote, só entram as pessoas que têm esse lote, e só com ele. Pagina por post_id,
+	 * então é seguro restaurar (e apagar o registro) enquanto percorre.
+	 *
+	 * @param string $lote Filtra por lote; vazio = todos.
+	 * @return Generator
+	 */
+	private function registros_datas( $lote ) {
+		global $wpdb;
+
+		$ultimo = 0;
+		while ( true ) {
+			$linhas = $wpdb->get_results(
+				$wpdb->prepare(
+					"SELECT post_id, meta_value FROM {$wpdb->postmeta} WHERE meta_key = %s AND post_id > %d ORDER BY post_id ASC LIMIT %d",
+					self::META_DATAS,
+					$ultimo,
+					self::BLOCO
+				)
+			);
+			if ( ! $linhas ) {
+				return;
+			}
+
+			$bloco = array();
+			foreach ( $linhas as $linha ) {
+				$ultimo = (int) $linha->post_id;
+				$mapa   = json_decode( (string) $linha->meta_value, true );
+				if ( ! is_array( $mapa ) ) {
+					if ( '' === $lote ) {
+						$bloco[ $ultimo ] = null;
+					}
+					continue;
+				}
+				if ( '' !== $lote ) {
+					if ( ! isset( $mapa[ $lote ] ) ) {
+						continue;
+					}
+					$mapa = array( $lote => $mapa[ $lote ] );
+				}
+				$bloco[ $ultimo ] = $mapa;
+			}
+
+			if ( $bloco ) {
+				yield $bloco;
+			}
+		}
 	}
 
 	/* ---------- Auxiliares ---------- */
@@ -2456,8 +3845,10 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 	/**
 	 * Decodifica e valida o JSON de _hbv_migracao de um post.
 	 *
-	 * Três formas: conversão de tipo (sem "acao"), obra criada ("acao" = "criada")
-	 * e página dividida ("acao" = "dividida"). Todas voltam com as mesmas chaves
+	 * Quatro formas: conversão de tipo (sem "acao"), obra ou fato criado ("acao" = "criada";
+	 * "tipo" = "hbv_fato" nos fatos), página de bibliografia ou discografia dividida
+	 * ("acao" = "dividida" com "obras") e página de mês dividida ("acao" = "dividida" com
+	 * "fatos", "subtipo" = "mes"). Todas voltam com as mesmas chaves
 	 * básicas (lote, data, acao, tipo_anterior, caminho_anterior, tipo_novo, termos);
 	 * em obras e páginas, "tipo_novo" é o rótulo usado em "status" e "desfazer".
 	 *
@@ -2474,6 +3865,8 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 			'lote'             => (string) $d['lote'],
 			'data'             => isset( $d['data'] ) ? (string) $d['data'] : '',
 			'acao'             => '',
+			'subtipo'          => '',
+			'tipo_post'        => '',
 			'tipo_anterior'    => '',
 			'caminho_anterior' => '',
 			'tipo_novo'        => '',
@@ -2487,9 +3880,27 @@ class HBV_Migracao_Command extends WP_CLI_Command {
 				return null;
 			}
 			$base['acao']      = 'criada';
-			$base['tipo_novo'] = self::ROTULO_CRIADA;
+			$base['tipo_post'] = ( isset( $d['tipo'] ) && 'hbv_fato' === $d['tipo'] ) ? 'hbv_fato' : 'hbv_obra';
+			$base['tipo_novo'] = ( 'hbv_fato' === $base['tipo_post'] ) ? self::ROTULO_FATO : self::ROTULO_CRIADA;
 			$base['origem']    = (int) $d['origem'];
 			$base['ordem']     = isset( $d['ordem'] ) && is_numeric( $d['ordem'] ) ? (int) $d['ordem'] : 0;
+			return $base;
+		}
+
+		if ( 'dividida' === $acao && isset( $d['fatos'] ) ) {
+			// Página de mês (comando "meses").
+			if ( ! isset( $d['status_anterior'], $d['mes'], $d['destino'] ) || ! is_numeric( $d['mes'] ) || ! is_array( $d['fatos'] ) ) {
+				return null;
+			}
+			$base['acao']            = 'dividida';
+			$base['subtipo']         = 'mes';
+			$base['tipo_novo']       = self::ROTULO_MES;
+			$base['status_anterior'] = (string) $d['status_anterior'];
+			$base['mes']             = (int) $d['mes'];
+			$base['fatos']           = array_map( 'intval', array_filter( $d['fatos'], 'is_numeric' ) );
+			$base['caminho_antigo']  = isset( $d['caminho_antigo'] ) ? (string) $d['caminho_antigo'] : '';
+			$base['destino']         = (string) $d['destino'];
+			$base['termo_autoria']   = 0;
 			return $base;
 		}
 

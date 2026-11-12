@@ -44,7 +44,7 @@ Destinos aceitos nesta versão:
 | `hbv_pessoa`, `hbv_lugar`, `hbv_logradouro`, `hbv_instituicao`, `hbv_obra`, `hbv_fato` | muda o `post_type`, acrescenta o termo de tipo e o tema |
 | `post` | continua post; só acrescenta o tema |
 | `pagina` | muda para `page` |
-| `bibliografia`, `discografia`, `fato_mes` | **ignorados** nesta versão (serão divididos em itens por um comando próprio) |
+| `bibliografia`, `discografia`, `fato_mes` | **ignorados** pelo `converter` (têm comandos próprios: `obras` e `meses`) |
 
 Taxonomia do termo por tipo: `hbv_lugar` → `hbv_tipo_lugar`; `hbv_instituicao` →
 `hbv_tipo_instituicao`; `hbv_obra` → `hbv_tipo_obra`. Termo inexistente → linha recusada e
@@ -256,10 +256,141 @@ criada`, e o título novo for igual ao atual ignorando maiúsculas e minúsculas
 `_hbv_titulo_original` (só na primeira vez) e atualiza `post_title` com `wp_update_post`
 (`post_name` não muda). `desfazer` não precisa tratar: o título some com a obra.
 
+## Páginas de mês (0.4.0)
+
+As 12 páginas "JANEIRO" a "DEZEMBRO" (slugs `janeiro`, `fevereiro`, `marco`, … `dezembro`) têm texto de
+abertura, as listas "Nasceram nesse mês" e "Morreram nesse mês", o "Programa de eventos do mês" e a
+bibliografia. Cada parte vai para um lugar:
+
+| Parte da página | Destino |
+|---|---|
+| Item do "Programa de eventos do mês" | um `hbv_fato` (dia, mês, ano, tema, fontes) |
+| Pessoa em "Nasceram" e "Morreram" | dia e mês na ficha da biografia (`hbv_nascimento_dia`/`_mes`, `hbv_falecimento_dia`/`_mes`); as listas passam a ser geradas desses campos |
+| Texto de abertura e bibliografia | option `hbv_meses` (autoload desligado) |
+| Endereço antigo (`/janeiro/`) | 301 para `/datas-e-fatos/?hbv_mes=1`, por caminho fixo |
+
+### Fluxo
+
+```
+exportar_conteudo.py -> conteudo-meses.json -> dividir_meses.py -> plano-fatos.jsonl + meses.json + datas-pessoas.tsv
+datas-pessoas.tsv + pessoas.tsv (do banco) -> casar_pessoas.py -> datas-pessoas-casadas.tsv
+                                              -> wp hbv migracao meses
+```
+
+1. `dividir_meses.py conteudo-meses.json <pasta>` gera `datas-pessoas.tsv`, `plano-fatos.jsonl` e `meses.json`.
+2. `casar_pessoas.py pessoas.tsv datas-pessoas.tsv datas-pessoas-casadas.tsv` descobre o ID da
+   biografia de cada linha (slug do link, slug antigo ou nome único).
+3. `wp hbv migracao meses plano-fatos.jsonl meses.json datas-pessoas-casadas.tsv --simular` mostra o que
+   mudaria; sem `--simular` grava (`--lote=<nome>` para dar nome ao lote).
+4. `wp hbv migracao verificar --lote=<nome>` confere os endereços; `desfazer --lote=<nome>` volta tudo.
+
+### Arquivos de entrada
+
+**`plano-fatos.jsonl`**: um objeto por linha, na ordem do "Programa de eventos".
+
+| Campo | Uso |
+|---|---|
+| `id_pagina` | ID da página do mês (tem de ser o de um mês de `meses.json`) |
+| `mes`, `dia` | mês (1 a 12) e dia (1 a 31, ou `null` para o fato que vale o mês todo); a data tem de existir (30/02 é recusado) |
+| `ordem` | vira `menu_order` do fato |
+| `ano` | `null` ou 1500 a 2200 |
+| `titulo`, `conteudo_html` | `post_title` e `post_content` (HTML do acervo, sem filtro kses) |
+| `tema` | slug de `hbv_tema` (`religiosidade`, `cultura`, `saude`, `historia-do-municipio`); termo inexistente recusa o mês |
+| `fontes` | lista; vira `hbv_fontes`, uma fonte por linha |
+| `grupo` | `dia` ou `mes` (informativo) |
+| `links` | slugs citados (informativo; o migrador não os usa) |
+
+**`meses.json`**: objeto com as chaves `"1"` a `"12"`; cada valor tem `id_pagina`, `slug`, `titulo`,
+`abertura_html` e `bibliografia` (lista de textos).
+
+**`datas-pessoas-casadas.tsv`**: cabeçalho `id mes dia tipo como slug nome`, separado por tabulação.
+`id` é o ID do `hbv_pessoa` (vazio quando não casou); `tipo` é `nascimento` ou `falecimento`; `como`
+e `slug` só informam o casamento. Linha com data inexistente, tipo desconhecido ou número de colunas
+errado é recusada na leitura e vai para o relatório de pessoas.
+
+### `wp hbv migracao meses <plano-fatos> <meses> <datas-pessoas> [--simular] [--lote=<nome>]`
+
+Para cada mês de 1 a 12, na ordem:
+
+1. **Página**: tem de existir, ser `post`, `publish` e ter o slug de `meses.json`. Se já tem
+   `_hbv_migracao` com `acao` "dividida" (deste ou de outro lote), o mês é **pulado**; se tem outro
+   registro, é recusado. Qualquer falha recusa o mês inteiro, sem gravar nada dele.
+   Também recusam o mês: linha inválida do `plano-fatos` com o `id_pagina` dele, tema inexistente,
+   `fato` com `mes` diferente do mês, e a option `hbv_meses` ou o caminho fixo já ocupados.
+2. **Fatos**: um `hbv_fato` publicado por linha, na ordem de `ordem`, com `post_date`,
+   `post_date_gmt` e `post_author` da página do mês. Metas `hbv_dia`, `hbv_mes`, `hbv_ano` (os não
+   nulos) e `hbv_fontes`; termo `hbv_tema`; `_hbv_migracao` =
+   `{"lote","data","acao":"criada","tipo":"hbv_fato","origem":<id_pagina>,"ordem"}`.
+   Se um fato falhar, o que o mês já criou é apagado e o mês é recusado.
+3. **Datas das pessoas** (linhas do TSV com o mês e `id` preenchido). Dia e mês são tratados juntos:
+   - campo vazio: é gravado; campo com valor igual: nada a fazer ("já igual"); se todos já são iguais,
+     a linha conta como "já igual";
+   - campo com valor **diferente** na ficha: **conflito**; nada é gravado (nem o outro campo) e a linha
+     vai para o relatório de pessoas com a data atual e a do mês;
+   - a mesma pessoa e tipo com datas diferentes no próprio TSV (em qualquer mês) também é conflito
+     (calculado antes de gravar qualquer coisa): nenhuma das linhas é gravada;
+   - linha repetida e igual no TSV conta uma vez; linha sem `id` é "sem biografia" (só no relatório);
+     `id` que não é `hbv_pessoa` publicada, ou pessoa com `_hbv_migracao_datas` ilegível, é "pessoa
+     inválida" (só no relatório).
+   O que foi gravado fica em `_hbv_migracao_datas` na pessoa, **um registro por lote**:
+   `{"<lote>":{"data":"…","campos":{"hbv_nascimento_dia":null,"hbv_nascimento_mes":null}}}`, onde cada
+   campo traz o valor anterior (`null` = não existia). Como o comando só grava campos vazios, o anterior
+   é sempre `null`, mas o desfazer também sabe devolver um valor. A estrutura por lote permite que a
+   mesma pessoa receba datas em lotes diferentes (por exemplo, nascimento num lote e falecimento noutro)
+   e que cada um seja desfeito sozinho.
+4. **Texto do mês**: `hbv_meses[<n>]` = `{"abertura_html","bibliografia","lote","id_pagina"}`
+   (`wp_kses_post` na abertura, `sanitize_text_field` em cada item da bibliografia).
+5. **Página**: `_hbv_migracao` = `{"lote","data","acao":"dividida","mes","status_anterior":"publish",
+   "caminho_antigo":"/janeiro/","destino":"/datas-e-fatos/?hbv_mes=1","fatos":[ids]}`; passa para
+   `draft` por atualização direta (não muda `post_modified`, não cria revisão).
+6. **Redirecionamento**: grava `'/janeiro/' => '/datas-e-fatos/?hbv_mes=1'` em
+   `hbv_core_caminhos_fixos` (veja abaixo).
+
+Se a gravação de qualquer etapa de um mês falhar, o mês é desfeito por inteiro (fatos, datas, options e
+registro) e recusado; os outros meses seguem. Linhas do `plano-fatos` sem mês atribuível (JSON
+inválido, `id_pagina` desconhecido) **interrompem** o comando antes de gravar, para nenhum fato sumir em
+silêncio; com `--simular` aparecem como aviso.
+
+`--simular` não grava nada (nem relatórios nem termos) e mostra, por mês, os fatos a criar, as datas a
+gravar, já iguais, conflitos e sem biografia, e 5 exemplos de fatos (título | dia/mês/ano | tema).
+
+Saída: tabela-resumo (meses divididos, fatos criados, datas gravadas, já iguais, conflitos, sem
+biografia, linhas e pessoas inválidas, meses pulados, recusados), motivos com contagem e dois
+relatórios em `uploads/hbv-migracao/`: `<lote>.tsv` (uma linha por mês: `mes, id_pagina, slug,
+fatos_criados, ids, datas_gravadas, ja_iguais, conflitos, sem_biografia, caminho_antigo, destino,
+resultado, motivo`) e `<lote>-pessoas.tsv` (conflitos, sem biografia, pessoas e linhas inválidas:
+`mes, id, nome, tipo, data_atual, data_do_mes, resultado, motivo`).
+
+### Redirecionamento por caminho fixo
+
+Algumas páginas antigas não viram um post nem um termo. A option `hbv_core_caminhos_fixos` (autoload
+ligado) guarda `caminho normalizado => URL relativa à home`, por exemplo
+`'/janeiro/' => '/datas-e-fatos/?hbv_mes=1'`. `hbv_core_resolver_caminho()` consulta a option **depois**
+de posts e termos e devolve `home_url( $relativo )`; só aceita destino que começa com uma barra (nunca
+endereço de outro site). Como os outros redirecionamentos, o 301 só dispara em 404 (a página de mês
+fica em rascunho) e nunca no painel, REST, AJAX, cron e WP-CLI.
+
+O destino calculado pelo comando é `add_query_arg( 'hbv_mes', N, get_post_type_archive_link( 'hbv_fato' ) )`,
+guardado sem o endereço do site. **A listagem de `hbv_fato` ainda não filtra por `hbv_mes`**: até o tema
+ou um módulo novo tratar o parâmetro, o endereço mostra o arquivo inteiro.
+
+### Desfazer, verificar e status
+
+- `desfazer --lote=<nome>`: apaga os fatos criados (definitivamente); restaura as datas das pessoas
+  a partir de `_hbv_migracao_datas` (apaga a meta quando o anterior era `null`, tira a entrada do lote
+  do registro e apaga a meta quando fica vazia); remove de `hbv_meses` os meses do lote e de
+  `hbv_core_caminhos_fixos` as entradas do lote (apagando a option que ficar vazia); devolve a página
+  ao status anterior e apaga o `_hbv_migracao` dela. As contagens de `hbv_tema`, categorias e
+  etiquetas são recalculadas no fim. O objetivo é banco idêntico ao anterior.
+- `verificar [--lote=<nome>]`: cada página de mês dividida deve resolver `caminho_antigo` para
+  `home_url( destino )`.
+- `status`: acrescenta, por lote, `hbv_fato (criado)`, `página de mês (dividida)` e
+  `biografia (datas gravadas)` (número de pessoas).
+
 ## Fora desta versão (próximos PRs)
 
-- Páginas de mês: listas "Nasceram/Morreram" passam a ser geradas das datas das biografias;
-  "Programa de eventos" vira `hbv_fato`.
+- Filtro `hbv_mes` na listagem de `hbv_fato` e as listas "Nasceram/Morreram neste mês" geradas dos
+  campos de data das biografias (a migração já grava os dados; falta a exibição).
 - Extração de campos da ficha (nascimento, falecimento, local, papel; tipo e lei do logradouro;
   distrito da localidade). Regras primeiro; casos fora do padrão por modelo pequeno, com validação.
 - Reescrever links internos antigos dentro dos textos.
